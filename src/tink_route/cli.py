@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
+from . import __version__
 from .client import DEFAULT_MODEL, DEFAULT_THRESHOLD, JevRouterClient
 from .metadata import load_library_skills
 
@@ -36,7 +37,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="Dynamic Agent Skill Router using TypeSafe Jev.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("task", help="The user's task or query description to evaluate.")
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument("task", nargs="?", help="The user's task or query description to evaluate.")
     parser.add_argument(
         "-i",
         "--install",
@@ -67,6 +74,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+
+    if not args.task:
+        parser.print_help()
+        return 1
 
     api_key = os.environ.get("TYPESAFE_API_KEY")
     if not api_key:
