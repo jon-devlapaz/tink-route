@@ -1,0 +1,121 @@
+{
+  "metrics": {
+    "control_prompt_tokens_per_turn": 4883,
+    "treatment_accuracy_pct": 100.0,
+    "treatment_false_positive_rate": 0,
+    "treatment_mean_latency_ms": 1066.5
+  },
+  "cases": [
+    {
+      "case": {
+        "id": "case_1_typo",
+        "category": "negative_control",
+        "task": "Fix a minor typo in the README.md heading",
+        "expected": "no_skill_needed"
+      },
+      "treatment": {
+        "status": "no_skill_needed",
+        "task": "Fix a minor typo in the README.md heading",
+        "specialist_noul": 0.07,
+        "threshold": 0.6,
+        "elapsed_ms": 303,
+        "eval_elapsed_ms": 353
+      },
+      "is_match": true
+    },
+    {
+      "case": {
+        "id": "case_2_fibonacci",
+        "category": "negative_control",
+        "task": "Write a unit test for calculating Fibonacci numbers in Python",
+        "expected": "no_skill_needed"
+      },
+      "treatment": {
+        "status": "no_skill_needed",
+        "task": "Write a unit test for calculating Fibonacci numbers in Python",
+        "specialist_noul": 0.44,
+        "threshold": 0.6,
+        "elapsed_ms": 420,
+        "eval_elapsed_ms": 484
+      },
+      "is_match": true
+    },
+    {
+      "case": {
+        "id": "case_3_binary_search",
+        "category": "negative_control",
+        "task": "Fix off-by-one bug in binary search algorithm",
+        "expected": "no_skill_needed"
+      },
+      "treatment": {
+        "status": "no_skill_needed",
+        "task": "Fix off-by-one bug in binary search algorithm",
+        "specialist_noul": 0.26,
+        "threshold": 0.6,
+        "elapsed_ms": 272,
+        "eval_elapsed_ms": 335
+      },
+      "is_match": true
+    },
+    {
+      "case": {
+        "id": "case_4_shaders",
+        "category": "positive_specialist",
+        "task": "Create WebGL particle simulation with custom GLSL vertex and fragment shaders in ThreeJS",
+        "expected": "threejs-shaders"
+      },
+      "treatment": {
+        "status": "routed",
+        "task": "Create WebGL particle simulation with custom GLSL vertex and fragment shaders in ThreeJS",
+        "winner": "threejs-shaders",
+        "probability": 0.85,
+        "confidence": 0.85,
+        "specialist_noul": 0.93,
+        "threshold": 0.6,
+        "elapsed_ms": 1156,
+        "eval_elapsed_ms": 1213
+      },
+      "is_match": true
+    },
+    {
+      "case": {
+        "id": "case_5_architecture",
+        "category": "positive_specialist",
+        "task": "Audit this codebase architecture and produce an architectural improvement plan",
+        "expected": "improve-codebase-architecture"
+      },
+      "treatment": {
+        "status": "routed",
+        "task": "Audit this codebase architecture and produce an architectural improvement plan",
+        "winner": "improve-codebase-architecture",
+        "probability": 0.92,
+        "confidence": 0.91,
+        "specialist_noul": 0.97,
+        "threshold": 0.6,
+        "elapsed_ms": 3398,
+        "eval_elapsed_ms": 3463
+      },
+      "is_match": true
+    },
+    {
+      "case": {
+        "id": "case_6_research",
+        "category": "positive_specialist",
+        "task": "Search Twitter, Bilibili, and Reddit to find public community feedback on our product",
+        "expected": "agent-reach"
+      },
+      "treatment": {
+        "status": "routed",
+        "task": "Search Twitter, Bilibili, and Reddit to find public community feedback on our product",
+        "winner": "agent-reach",
+        "probability": 0.85,
+        "confidence": 0.85,
+        "specialist_noul": 0.85,
+        "threshold": 0.6,
+        "elapsed_ms": 850,
+        "eval_elapsed_ms": 914
+      },
+      "is_match": true
+    }
+  ]
+}
