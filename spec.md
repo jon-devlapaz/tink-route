@@ -39,12 +39,15 @@ Reference: `intent.md` (2026-09-21)
     "skills": ["threejs-shaders"]
   }
   ```
-- **Pruning Algorithm (`tink-route prune`):**
-  1. Read `.tink/ephemeral.json` if it exists.
-  2. Read `.tink/skills.toml` if it exists to identify pinned permanent skills.
+- **Ownership-Safe Pruning Algorithm (`tink-route prune`):**
+  1. Read `.tink/ephemeral.json` if it exists (`ephemeral_tracked`).
+  2. Read `.tink/skills.toml` if it exists (`pinned`).
   3. Formulate the set of pruning candidates:
-     - All skills in `.tink/ephemeral.json`, plus any installed skill in `.agents/skills/` that is not declared in `.tink/skills.toml`.
-     - **Exceptions:** Never prune `manage-tink`, never prune skills explicitly declared in `.tink/skills.toml`.
+     - **Default Mode (Ledger-Only):** `candidates = ephemeral_tracked & installed`.
+       *Only skills installed and recorded by `tink-route -i` are eligible.*
+       Manual `tink skill add` or other harness installs (Cursor, Claude) are strictly preserved.
+     - **Broad Sweep Mode (`--all-unpinned`):** `candidates = (ephemeral_tracked & installed) | {s for s in installed if s not in pinned}`.
+     - **Invariants:** Never prune `manage-tink`. Never prune skills explicitly declared in `.tink/skills.toml`.
   4. If `--dry-run`:
      - Print eligible skills and exit `0`.
   5. For each qualifying skill:
@@ -70,11 +73,34 @@ Reference: `intent.md` (2026-09-21)
   - Construct a Jev `choice` question:
     - `criteria`: Map of skill names to their published descriptions.
     - `instructions`: `"Which skill is most directly load-bearing and capable of executing the requested transformation?"`
-  - If the candidate count exceeds 25, batch candidates deterministically, evaluate batches in parallel, and retain top candidates for a final reduction choice.
+  - **Batched Reduction & Confidence Preservation:**
+    - When candidate count $> \text{BATCH_SIZE}$ (24):
+      - Split into deterministic chunks of $\le \text{BATCH_SIZE}$.
+      - For each batch, record Jev's authentic `choice`, `confidence`, and `probabilities`.
+      - Exclude sentinels (`__no_skill__`, `__no_match__`) from survivor candidate lists.
+      - If multiple batch winners survive: evaluate final Choice reduction across survivors with Jev.
+      - If exactly one batch winner survives: **preserve its authentic Jev `confidence` and `probabilities`** from that batch (no synthetic constants).
+      - If zero batch winners survive: winner is `__no_skill__` with Jev-derived probability.
 - **Rule:**
   - Top candidate must meet or exceed `threshold`.
   - If top probability $< \text{threshold}$, return `status: "uncertain"` / `status: "review"`.
   - Otherwise return `status: "routed"` with the selected skill.
+
+### 2.4 Mid-Session Skill Activation Contract
+- **The Contract:**
+  1. `tink-route -i` performs filesystem installation via `tink skill add`.
+  2. In modern agent harnesses (Pi, Claude Code, Cursor, Codex), newly installed skills are **immediately active without session restart**.
+  3. The agent must read `.agents/skills/<winner>/SKILL.md` using its standard `read()` tool call in a single hop.
+  4. The `--json` payload includes an explicit `activation` block providing canonical instructions:
+     ```json
+     "activation": {
+       "mode": "direct_read",
+       "entrypoint": ".agents/skills/cro/SKILL.md",
+       "references": ["references/form.md", "references/experiments.md"],
+       "restart_required": false,
+       "instruction": "Read SKILL.md directly; mid-session use does not require session restart."
+     }
+     ```
 
 ### 2.4 Mutation & Execution Hand-off
 - When `status == "routed"` and `--install` is supplied:

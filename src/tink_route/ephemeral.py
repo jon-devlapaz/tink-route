@@ -62,17 +62,20 @@ def get_installed_skills(project_dir: Path) -> List[str]:
     return installed
 
 
-def prune_ephemeral_skills(project_dir: Path, dry_run: bool = False) -> Dict[str, Any]:
+def prune_ephemeral_skills(project_dir: Path, dry_run: bool = False, all_unpinned: bool = False) -> Dict[str, Any]:
     installed = set(get_installed_skills(project_dir))
     ephemeral_tracked = set(load_ephemeral_skills(project_dir))
     pinned = load_pinned_skills(project_dir)
 
-    # Eligible for pruning:
-    # 1. Any skill explicitly tracked as ephemeral that is installed
-    # 2. Any installed skill that is NOT pinned and NOT reserved
-    candidates_to_prune = (ephemeral_tracked & installed) | {
-        s for s in installed if s not in pinned and s not in RESERVED_SKILLS
-    }
+    # Ownership-safe pruning:
+    # Default: only prune skills explicitly recorded as ephemeral by tink-route.
+    # If all_unpinned: also sweep unpinned skills not in skills.toml.
+    if all_unpinned:
+        candidates_to_prune = (ephemeral_tracked & installed) | {
+            s for s in installed if s not in pinned and s not in RESERVED_SKILLS
+        }
+    else:
+        candidates_to_prune = ephemeral_tracked & installed
 
     # Always protect reserved skills and explicitly pinned skills
     prunable = sorted(candidates_to_prune - pinned - RESERVED_SKILLS)

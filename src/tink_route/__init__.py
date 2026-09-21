@@ -2,7 +2,7 @@
 tink-route: Dynamic Agent Skill Router using TypeSafe Jev.
 """
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 from .cli import main
 from .client import JevRouterClient

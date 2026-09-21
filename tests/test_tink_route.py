@@ -255,7 +255,7 @@ description: A skill without explicit name.
             self.assertIn("my-permanent-skill", dry_res["preserved"])
             mock_subprocess.assert_not_called()
 
-            # Test Actual Pruning
+            # Test Actual Pruning (ledger-only default preserves foreign skills)
             live_res = prune_ephemeral_skills(tmppath, dry_run=False)
             self.assertEqual(live_res["pruned"], ["threejs-shaders"])
             self.assertIn("manage-tink", live_res["preserved"])
@@ -267,6 +267,125 @@ description: A skill without explicit name.
                 text=True,
                 check=False
             )
+
+    @patch("subprocess.run")
+    def test_prune_preserves_foreign_and_manual_skills(self, mock_subprocess):
+        """Issue #1: Skills not recorded in ephemeral ledger must be preserved by default."""
+        import tempfile
+        from tink_route.ephemeral import prune_ephemeral_skills
+
+        mock_subprocess.return_value.returncode = 0
+        mock_subprocess.return_value.stdout = "Removed skill"
+        mock_subprocess.return_value.stderr = ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            skills_dir = tmppath / ".agents" / "skills"
+            skills_dir.mkdir(parents=True)
+
+            # A foreign skill installed by Cursor or manual tink skill add (NOT in ephemeral.json)
+            (skills_dir / "cursor-skill").mkdir()
+            (skills_dir / "cursor-skill" / "SKILL.md").write_text("cursor")
+
+            # Default prune (ledger-only): must preserve cursor-skill
+            res_default = prune_ephemeral_skills(tmppath, dry_run=False, all_unpinned=False)
+            self.assertEqual(res_default["pruned"], [])
+            self.assertIn("cursor-skill", res_default["preserved"])
+            mock_subprocess.assert_not_called()
+
+            # Opt-in broad sweep: prunes cursor-skill
+            res_sweep = prune_ephemeral_skills(tmppath, dry_run=False, all_unpinned=True)
+            self.assertEqual(res_sweep["pruned"], ["cursor-skill"])
+            mock_subprocess.assert_called_once_with(
+                ["tink", "skill", "remove", "cursor-skill"],
+                cwd=str(tmppath),
+                capture_output=True,
+                text=True,
+                check=False
+            )
+
+    @patch("urllib.request.urlopen")
+    def test_batched_routing_preserves_authentic_jev_confidence(self, mock_urlopen):
+        """Issue #3: Multi-batch single winner must preserve authentic Jev confidence, not hardcoded 0.85."""
+        # Stage 1: Specialist needed
+        resp_stage1 = MagicMock()
+        resp_stage1.read.return_value = json.dumps({
+            "model": "jev-1.13.0",
+            "answers": {"specialist_needed": {"type": "noul", "noul": 0.90}}
+        }).encode("utf-8")
+
+        # 25 dummy skills -> 2 batches (24 in batch 1, 1 in batch 2)
+        skills = [{"name": f"skill-{i}", "description": f"desc {i}"} for i in range(25)]
+
+        # Batch 1 returns winner skill-0 with authentic confidence 0.77 and prob 0.77
+        resp_batch1 = MagicMock()
+        resp_batch1.read.return_value = json.dumps({
+            "model": "jev-1.13.0",
+            "answers": {
+                "selected_skill": {
+                    "type": "choice",
+                    "choice": "skill-0",
+                    "confidence": 0.77,
+                    "probabilities": {"skill-0": 0.77, "__no_skill__": 0.23}
+                }
+            }
+        }).encode("utf-8")
+
+        # Batch 2 returns __no_skill__
+        resp_batch2 = MagicMock()
+        resp_batch2.read.return_value = json.dumps({
+            "model": "jev-1.13.0",
+            "answers": {
+                "selected_skill": {
+                    "type": "choice",
+                    "choice": "__no_skill__",
+                    "confidence": 0.99,
+                    "probabilities": {"__no_skill__": 0.99}
+                }
+            }
+        }).encode("utf-8")
+
+        mock_urlopen.return_value.__enter__.side_effect = [resp_stage1, resp_batch1, resp_batch2]
+
+        client = JevRouterClient(api_key="test-key")
+        result = client.route(task="Some task", skills=skills, threshold=0.60)
+
+        self.assertEqual(result["status"], "routed")
+        self.assertEqual(result["winner"], "skill-0")
+        # Must be authentic 0.77, NOT hardcoded 0.85
+        self.assertEqual(result["confidence"], 0.77)
+        self.assertEqual(result["probability"], 0.77)
+
+    @patch("tink_route.cli.JevRouterClient.route")
+    @patch("tink_route.cli.load_library_skills")
+    def test_activation_contract_in_json_output(self, mock_load, mock_route):
+        """Issue #2: JSON output must include activation contract object."""
+        import sys
+        import io
+        from tink_route.cli import main
+
+        mock_load.return_value = [{"name": "fake", "description": "fake desc"}]
+        mock_route.return_value = {
+            "status": "routed",
+            "winner": "fake",
+            "probability": 0.9,
+            "confidence": 0.9,
+            "specialist_noul": 0.9,
+            "threshold": 0.6
+        }
+
+        captured_out = io.StringIO()
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "dummy"}):
+            with patch.object(sys, "argv", ["tink-route", "--json", "some task"]):
+                with patch("sys.stdout", captured_out):
+                    code = main()
+
+        self.assertEqual(code, 0)
+        data = json.loads(captured_out.getvalue())
+        self.assertIn("activation", data)
+        self.assertEqual(data["activation"]["mode"], "direct_read")
+        self.assertFalse(data["activation"]["restart_required"])
+        self.assertEqual(data["activation"]["entrypoint"], ".agents/skills/fake/SKILL.md")
 
 
 if __name__ == "__main__":

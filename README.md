@@ -84,7 +84,22 @@ tink-route -i "Audit e-commerce checkout flow to optimize conversion rate"
 # References: references/experiments.md, references/form.md
 ```
 
-### 4. Exit Code Contract
+### 4. Post-Install Activation Contract
+- When `tink-route -i` installs a skill into `.agents/skills/<name>/`, modern agent harnesses (Pi, Cursor, Claude Code, Codex) do **not require a session restart**.
+- The invoking agent immediately reads the emitted `entrypoint` path (`.agents/skills/<name>/SKILL.md`) in a single hop.
+- The `--json` payload includes an explicit `activation` contract block:
+  ```json
+  "activation": {
+    "mode": "direct_read",
+    "entrypoint": ".agents/skills/cro/SKILL.md",
+    "references": ["references/form.md", "references/experiments.md"],
+    "scripts": [],
+    "restart_required": false,
+    "instruction": "Read SKILL.md directly; mid-session use does not require session restart."
+  }
+  ```
+
+### 5. Exit Code Contract
 Designed for clean scripting and deterministic agent branching:
 - **`0`**: Route succeeded (skill identified, and installed if `-i` was passed).
 - **`1`**: Unrouted (`no_skill_needed`, `no_match`, or `uncertain` below threshold).
@@ -99,25 +114,27 @@ else
 fi
 ```
 
-### 5. Milestone Pruning (`tink-route prune`)
-Eliminates manual cleanup bookkeeping. Skills installed with `-i` are tracked in `.tink/ephemeral.json`. At the end of a session or milestone:
+### 6. Ownership-Safe Milestone Pruning (`tink-route prune`)
+Eliminates manual cleanup bookkeeping while strictly preserving skills owned by other tools:
 
 ```bash
-# Preview what would be removed:
+# Preview what would be removed (ledger-only by default):
 tink-route prune --dry-run
 # Output: Eligible for pruning (1): threejs-shaders
 
-# Sweep all transient skills in one shot:
+# Sweep only skills installed and tracked by tink-route:
 tink-route prune
 # Output:
 # Pruned 1 ephemeral skill(s): threejs-shaders
 # Clean state confirmed in .agents/skills/.
 ```
 
-- **Manifest Protection:** Skills declared in `.tink/skills.toml` and reserved skills (`manage-tink`) are **strictly protected** and never pruned.
+- **Ownership Safety:** Only skills recorded in `<project>/.tink/ephemeral.json` are pruned by default. Manual `tink skill add` or other harness installs (Cursor, Claude) are **never touched**.
+- **Broad Sweep (`--all-unpinned`):** To sweep all unpinned skills in `.agents/skills/`, pass `tink-route prune --all-unpinned`.
+- **Manifest Protection:** Skills declared in `.tink/skills.toml` and reserved skills (`manage-tink`) are **strictly protected** and never pruned in any mode.
 - **Pass `--no-ephemeral`:** To install a permanent skill without ephemeral tracking: `tink-route -i --no-ephemeral "<task>"`.
 
-### 6. JSON Output (`--json`)
+### 7. JSON Output (`--json`)
 For programmatic invocation by AI agents:
 
 ```bash

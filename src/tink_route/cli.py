@@ -79,6 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prune ephemeral/unpinned skills from .agents/skills/.",
     )
     parser.add_argument(
+        "--all-unpinned",
+        action="store_true",
+        help="In prune mode, sweep all unpinned skills (including manual installs) rather than ledger-only.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview skills eligible for pruning without removing them.",
@@ -122,7 +127,7 @@ def main() -> int:
 
     # Handle prune command (either `tink-route prune` or `tink-route --prune`)
     if args.task == "prune" or args.prune:
-        res = prune_ephemeral_skills(Path.cwd(), dry_run=args.dry_run)
+        res = prune_ephemeral_skills(Path.cwd(), dry_run=args.dry_run, all_unpinned=args.all_unpinned)
         if args.json:
             print(json.dumps(res, indent=2))
         else:
@@ -188,6 +193,17 @@ def main() -> int:
         if not install_res["success"]:
             result["install_error"] = install_res["stderr"]
 
+    if result["status"] == "routed":
+        entry = result.get("skill_path") or f".agents/skills/{result['winner']}/SKILL.md"
+        result["activation"] = {
+            "mode": "direct_read",
+            "entrypoint": entry,
+            "references": result.get("references", []),
+            "scripts": result.get("scripts", []),
+            "restart_required": False,
+            "instruction": "Read SKILL.md directly; mid-session use does not require session restart.",
+        }
+
     if args.json:
         print(json.dumps(result, indent=2))
     else:
@@ -206,6 +222,7 @@ def main() -> int:
                 print(f"References: {', '.join(refs) if refs else '(none)'}")
                 if result.get("scripts"):
                     print(f"Scripts: {', '.join(result['scripts'])}")
+                print("Activation: Ready for immediate direct reading (no restart required).")
             elif args.install and not result.get("installed"):
                 print(f"Installation failed: {result.get('install_error', '')}", file=sys.stderr)
             else:

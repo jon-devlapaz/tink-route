@@ -132,25 +132,36 @@ class JevRouterClient:
                 if b_winner and b_winner not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL):
                     matching = [s for s in chunk if s["name"] == b_winner]
                     if matching:
-                        batch_winners.append(matching[0])
+                        b_conf = float(b_ans.get("confidence", 0.0))
+                        b_probs = b_ans.get("probabilities", {})
+                        b_prob = float(b_probs.get(b_winner, b_conf))
+                        batch_winners.append({
+                            "skill": matching[0],
+                            "winner": b_winner,
+                            "confidence": b_conf,
+                            "probabilities": b_probs,
+                            "probability": b_prob,
+                        })
 
             if len(batch_winners) > 1:
-                final_resp = evaluate_batch(batch_winners)
+                survivor_skills = [bw["skill"] for bw in batch_winners]
+                final_resp = evaluate_batch(survivor_skills)
                 choice_ans = final_resp.get("answers", {}).get("selected_skill", {})
                 winner = choice_ans.get("choice")
                 conf = float(choice_ans.get("confidence", 0.0))
                 probs = choice_ans.get("probabilities", {})
                 winner_prob = float(probs.get(winner, conf))
             elif batch_winners:
-                winner = batch_winners[0]["name"]
-                conf = 0.85
-                winner_prob = 0.85
-                probs = {winner: 0.85}
+                bw = batch_winners[0]
+                winner = bw["winner"]
+                conf = bw["confidence"]
+                probs = bw["probabilities"]
+                winner_prob = bw["probability"]
             else:
                 winner = NO_SKILL_SENTINEL
-                conf = 0.90
-                winner_prob = 0.90
-                probs = {NO_SKILL_SENTINEL: 0.90}
+                conf = 0.0
+                winner_prob = 0.0
+                probs = {NO_SKILL_SENTINEL: 0.0}
 
         elapsed = int((time.time() - start_time) * 1000)
 
