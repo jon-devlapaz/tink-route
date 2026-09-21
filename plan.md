@@ -1,53 +1,48 @@
-# Plan: Dynamic Agent Skill Routing via `tink-route` (from `spec.md` 2026-09-21)
+# Plan: Dynamic Agent Skill Routing v0.1.1 Enhancements (from `spec.md` 2026-09-21)
 
 ## Files that change
-- `/Users/jondev/.local/bin/tink-route` (new executable Python script)
-- `/Users/jondev/tests/test_tink_route.py` (new test suite covering CLI parsing, Jev payload construction, Stage 1 gating, Stage 2 ranking, and `--install` hand-off)
-- `~/.pi/agent/skills/` (cleanup: preserve `background-terminals` & `subagents` into `~/.tink/skills/`, remove from `~/.pi/agent/skills/`)
+- `src/tink_route/client.py`: Return runner-up candidate and margin when `status == "uncertain"`.
+- `src/tink_route/cli.py`: Emit exact `.agents/skills/<winner>/SKILL.md` path on install; apply exit code contract (0=routed, 1=unrouted/no-op, 2=error).
+- `src/tink_route/__init__.py`: Bump `__version__ = "0.1.1"`.
+- `pyproject.toml`: Bump version to `0.1.1`.
+- `tests/test_tink_route.py`: Unit tests asserting exit code contract and exact SKILL.md path emission.
+- `README.md`: Update usage examples and exit code documentation.
 
 ## Order of work
 
-1. **Test-Driven Foundation (Stage 4 prep):**
-   - Author `/Users/jondev/tests/test_tink_route.py` using Python's `unittest` standard library.
-   - Mock TypeSafe HTTP responses to test:
-     - Argument parsing (`-i`, `--install`, `--json`, `--threshold`, `--library`).
-     - Stage 1 Noul short-circuit: When Noul $< 0.55$, exits with `no_skill_needed` without calling Stage 2.
-     - Stage 2 Choice selection: When Noul $\ge 0.55$, routes to top candidate.
-     - `--install` behavior: Calls `tink skill add <winner>` when flag is passed.
+1. **Test-First Updates:**
+   - Update `tests/test_tink_route.py` with test cases verifying:
+     - Return code `0` when `status == "routed"`.
+     - Return code `1` when `status == "no_skill_needed"` or `"uncertain"`.
+     - Output contains `.agents/skills/<winner>/SKILL.md` on successful install.
+     - Output contains runner-up name and margin on uncertain decisions.
 
-2. **Implement Core Engine (`/Users/jondev/.local/bin/tink-route`):**
-   - Standard Python 3.11+ zero-dependency script (`urllib.request`, `json`, `os`, `sys`, `argparse`, `pathlib`).
-   - Read and parse skill library from `~/.tink/skills/*/SKILL.md` (extract frontmatter `name` and `description`).
-   - Implement TypeSafe client calling `https://api.typesafe.ai/v1/evaluate` with `TYPESAFE_API_KEY`.
-   - Implement two-stage evaluation logic.
-   - Implement subprocess hand-off to `tink skill add` when `-i` / `--install` is present.
-   - Make executable (`chmod +x ~/.local/bin/tink-route`).
+2. **Implement Core Enhancements:**
+   - `client.py`: Sort probabilities to extract `top_candidate`, `runner_up`, and `margin`.
+   - `cli.py`: Update human-readable output to print `Installed: .agents/skills/{winner}/SKILL.md`. Update `main()` return value according to exit code contract.
+   - Version bump to `0.1.1`.
 
 3. **Verify Locally Against Test Suite:**
-   - Run `python3 -m unittest discover -s /Users/jondev/tests -v`.
-   - Ensure 100% test pass rate before running live network probes.
+   - Run `PYTHONPATH=src python3 -m unittest discover -s tests -v`.
+   - Ensure 100% pass rate.
 
-4. **Live Validation on Real Queries:**
-   - Test 1 (Standard coding task): `tink-route "Fix the off-by-one error in array sorting"` $\to$ Expected: `no_skill_needed`.
-   - Test 2 (Specialized domain task): `tink-route "Create a ThreeJS particle vortex with custom GLSL shaders"` $\to$ Expected: Routes to `threejs-shaders`.
-   - Test 3 (Atomic Install verification): Run with `--install` on a test task and verify receipt in `.agents/skills/`.
+4. **Verify Live CLI Execution:**
+   - Probe standard coding query $\to$ verify exit code `1`.
+   - Probe specialist query with `-i` $\to$ verify `Installed: .agents/skills/.../SKILL.md` and exit code `0`.
+   - Probe ambiguous query $\to$ verify runner-up explanation and exit code `1`.
 
-5. **Pi Environment Alignment & Cleanup:**
-   - Copy `background-terminals` and `subagents` from `~/.pi/agent/skills/` into `~/.tink/skills/` if not present.
-   - Clean `~/.pi/agent/skills/` so Pi system prompts start completely free of progressive disclosure bloat.
+5. **Deploy & Release (Stage 5):**
+   - Commit changes with semantic commit message.
+   - Push to GitHub `main`.
+   - Verify GitHub Actions CI run.
+   - Create GitHub release `v0.1.1`.
 
 ## Risks
-
-- **TypeSafe API Rate Limits or Socket Timeouts:**
-  - *Mitigation:* Explicit 5-second socket timeout; graceful JSON error exit with code `2`.
-- **Large Candidate Payloads:**
-  - *Mitigation:* Filter candidates to those with valid non-empty descriptions; truncate descriptions to 250 characters if library exceeds 60 skills.
-- **Accidental Workspace Mutation:**
-  - *Mitigation:* Require explicit `--install` flag; default is strictly read-only inspection.
+- Shell scripts expecting exit code `0` for `no_skill_needed`:
+  - *Mitigation:* Document clearly in README. Standard Unix semantics treat non-matching search/routing as exit 1 (matching `grep`, `diff`, `test`). `--json` output remains backwards compatible.
 
 ## Proof
-
-- `python3 -m unittest discover -s /Users/jondev/tests -v` exits 0 with all green tests.
-- Live dry-run `tink-route --json "Write a quicksort in Python"` returns `{"status": "no_skill_needed"}`.
-- Live dry-run `tink-route --json "Audit this codebase architecture"` returns `{"status": "routed", "winner": "improve-codebase-architecture"}`.
-- `~/.pi/agent/skills/` is clean.
+- All unit tests pass in `tests/test_tink_route.py`.
+- `tink-route "Fix typo"; echo $?` prints `1`.
+- `tink-route "Create GLSL shader"; echo $?` prints `0`.
+- GitHub Actions CI workflow passes on all 3 Python versions.

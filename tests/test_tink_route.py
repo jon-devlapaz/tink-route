@@ -118,12 +118,79 @@ description: A skill without explicit name.
 
         outcome = install_skill("threejs-shaders")
         self.assertTrue(outcome["success"])
+        self.assertEqual(outcome["skill_path"], ".agents/skills/threejs-shaders/SKILL.md")
         mock_subprocess.assert_called_once_with(
             ["tink", "skill", "add", "threejs-shaders"],
             capture_output=True,
             text=True,
             check=False
         )
+
+    @patch("urllib.request.urlopen")
+    def test_stage_2_uncertain_extracts_runner_up(self, mock_urlopen):
+        resp_stage1 = MagicMock()
+        resp_stage1.read.return_value = json.dumps({
+            "model": "jev-1.13.0",
+            "answers": {
+                "specialist_needed": {"type": "noul", "noul": 0.85}
+            }
+        }).encode("utf-8")
+
+        resp_stage2 = MagicMock()
+        resp_stage2.read.return_value = json.dumps({
+            "model": "jev-1.13.0",
+            "answers": {
+                "selected_skill": {
+                    "type": "choice",
+                    "choice": "cro",
+                    "confidence": 0.55,
+                    "probabilities": {"cro": 0.55, "landing-page": 0.40, "__no_skill__": 0.05}
+                }
+            }
+        }).encode("utf-8")
+
+        mock_urlopen.return_value.__enter__.side_effect = [resp_stage1, resp_stage2]
+
+        client = JevRouterClient(api_key="test-key")
+        result = client.route(
+            task="Optimize marketing copy",
+            skills=[
+                {"name": "cro", "description": "Conversion rate optimization"},
+                {"name": "landing-page", "description": "Landing page design"}
+            ],
+            threshold=0.60
+        )
+
+        self.assertEqual(result["status"], "uncertain")
+        self.assertEqual(result["top_candidate"], "cro")
+        self.assertEqual(result["probability"], 0.55)
+        self.assertEqual(result["runner_up"], "landing-page")
+        self.assertEqual(result["runner_up_probability"], 0.40)
+        self.assertEqual(result["margin"], 0.15)
+
+    @patch("tink_route.cli.JevRouterClient.route")
+    @patch("tink_route.cli.load_library_skills")
+    def test_cli_exit_code_contract(self, mock_load, mock_route):
+        from tink_route.cli import main
+        import sys
+
+        mock_load.return_value = [{"name": "fake", "description": "fake desc"}]
+
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "dummy"}):
+            # 1. Routed -> exit 0
+            mock_route.return_value = {"status": "routed", "winner": "fake", "probability": 0.9, "confidence": 0.9, "specialist_noul": 0.9}
+            with patch.object(sys, "argv", ["tink-route", "some task"]):
+                self.assertEqual(main(), 0)
+
+            # 2. No skill needed -> exit 1
+            mock_route.return_value = {"status": "no_skill_needed", "task": "some task", "specialist_noul": 0.1, "threshold": 0.6}
+            with patch.object(sys, "argv", ["tink-route", "some task"]):
+                self.assertEqual(main(), 1)
+
+            # 3. Uncertain -> exit 1
+            mock_route.return_value = {"status": "uncertain", "task": "some task", "threshold": 0.6, "top_candidate": "fake", "probability": 0.5}
+            with patch.object(sys, "argv", ["tink-route", "some task"]):
+                self.assertEqual(main(), 1)
 
 
 if __name__ == "__main__":

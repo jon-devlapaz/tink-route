@@ -20,11 +20,13 @@ def install_skill(skill_name: str) -> Dict[str, Any]:
         text=True,
         check=False,
     )
+    skill_rel_path = f".agents/skills/{skill_name}/SKILL.md"
     return {
         "success": res.returncode == 0,
         "stdout": res.stdout.strip(),
         "stderr": res.stderr.strip(),
         "code": res.returncode,
+        "skill_path": skill_rel_path if res.returncode == 0 else None,
     }
 
 
@@ -99,6 +101,7 @@ def main() -> int:
     if result["status"] == "routed" and args.install:
         install_res = install_skill(result["winner"])
         result["installed"] = install_res["success"]
+        result["skill_path"] = install_res.get("skill_path")
         result["install_output"] = install_res["stdout"] or install_res["stderr"]
         if not install_res["success"]:
             result["install_error"] = install_res["stderr"]
@@ -116,15 +119,27 @@ def main() -> int:
             conf = result["confidence"]
             print(f"Recommended Skill: {winner} (p={p:.2f}, conf={conf:.2f}, noul={result['specialist_noul']:.2f})")
             if result.get("installed"):
-                print(f"Installed into .agents/skills/{winner}/ ({result.get('install_output', '')})")
+                print(f"Installed: {result.get('skill_path')}")
             elif args.install and not result.get("installed"):
                 print(f"Installation failed: {result.get('install_error', '')}", file=sys.stderr)
             else:
                 print(f"To install run: tink skill add {winner}")
         else:
-            print(f"Status: {status}. No single skill clearly exceeded the {result['threshold']:.2f} threshold.")
+            top = result.get("top_candidate")
+            p = result.get("probability", 0.0)
+            runner_up = result.get("runner_up")
+            rup_p = result.get("runner_up_probability", 0.0)
+            margin = result.get("margin", 0.0)
+            if runner_up:
+                print(f"Status: uncertain. Top candidate '{top}' (p={p:.2f}) fell below threshold {result['threshold']:.2f}. Runner-up: '{runner_up}' (p={rup_p:.2f}, margin={margin:.2f}).")
+            else:
+                print(f"Status: uncertain. Top candidate '{top}' (p={p:.2f}) fell below threshold {result['threshold']:.2f}.")
 
-    return 0
+    # Semantic exit code contract:
+    # 0 = routed successfully (and installed if -i was passed)
+    # 1 = unrouted (no skill needed or decision uncertain)
+    # 2 = error (returned earlier)
+    return 0 if result["status"] == "routed" else 1
 
 
 if __name__ == "__main__":

@@ -145,12 +145,26 @@ class JevRouterClient:
                 winner = batch_winners[0]["name"]
                 conf = 0.85
                 winner_prob = 0.85
+                probs = {winner: 0.85}
             else:
                 winner = NO_SKILL_SENTINEL
                 conf = 0.90
                 winner_prob = 0.90
+                probs = {NO_SKILL_SENTINEL: 0.90}
 
         elapsed = int((time.time() - start_time) * 1000)
+
+        # Extract top candidate, runner up, and margin
+        valid_candidates = [
+            (name, float(p))
+            for name, p in sorted(probs.items(), key=lambda item: float(item[1]), reverse=True)
+            if name not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL)
+        ]
+        top_cand = valid_candidates[0][0] if valid_candidates else None
+        top_p = valid_candidates[0][1] if valid_candidates else 0.0
+        runner_up = valid_candidates[1][0] if len(valid_candidates) > 1 else None
+        runner_up_p = valid_candidates[1][1] if len(valid_candidates) > 1 else 0.0
+        margin = round(top_p - runner_up_p, 2)
 
         if winner in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL) or not winner or winner_prob < threshold:
             reason = "no_skill_needed" if winner == NO_SKILL_SENTINEL else ("no_match" if winner == NO_MATCH_SENTINEL else "uncertain")
@@ -158,8 +172,11 @@ class JevRouterClient:
                 "status": reason,
                 "task": task,
                 "specialist_noul": specialist_noul,
-                "top_candidate": winner if winner not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL) else None,
-                "probability": winner_prob,
+                "top_candidate": top_cand,
+                "probability": top_p,
+                "runner_up": runner_up,
+                "runner_up_probability": runner_up_p,
+                "margin": margin,
                 "confidence": conf,
                 "threshold": threshold,
                 "elapsed_ms": elapsed,
@@ -170,6 +187,9 @@ class JevRouterClient:
             "task": task,
             "winner": winner,
             "probability": winner_prob,
+            "runner_up": runner_up,
+            "runner_up_probability": runner_up_p,
+            "margin": margin,
             "confidence": conf,
             "specialist_noul": specialist_noul,
             "threshold": threshold,

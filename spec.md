@@ -52,9 +52,22 @@ Reference: `intent.md` (2026-09-21)
 - When `status == "routed"` and `--install` is supplied:
   - Verify that the target project has an initialized `.agents/` or create it if missing via `tink skill add`.
   - Execute `tink skill add <winner>`.
-  - Capture stdout/stderr and exit with status `0`.
-- When `--install` is not supplied:
-  - Output winner and probability; leave project directory untouched.
+  - Output format:
+    `Installed: .agents/skills/<winner>/SKILL.md`
+  - Exit code: `0`.
+- When `status == "routed"` and `--install` is not supplied:
+  - Output winner, confidence, probability, and instructions to install:
+    `Recommended Skill: <winner> (p=0.85, conf=0.85, noul=0.93)`
+    `To install run: tink skill add <winner>`
+  - Exit code: `0`.
+- When `status == "no_skill_needed"`:
+  - Output:
+    `Status: no_skill_needed (specialist_noul: 0.12). Standard coding tools and models are sufficient.`
+  - Exit code: `1`.
+- When `status == "uncertain"`:
+  - Output top candidate, runner up, and margin:
+    `Status: uncertain. Top candidate '<top>' (p=0.59) fell below threshold 0.60. Runner-up: '<second>' (p=0.35, margin=0.24).`
+  - Exit code: `1`.
 
 ---
 
@@ -68,9 +81,9 @@ Reference: `intent.md` (2026-09-21)
   - Read `TYPESAFE_API_KEY` from process environment.
   - Never log, echo, or serialize the key in error outputs or payloads.
   - Do not upload file contents or project secrets; only the task description and public skill metadata are transmitted.
-- **Exit Codes:**
-  - `0`: Successful execution (`routed` or `no_skill_needed`).
-  - `1`: Unresolved or uncertain route (below threshold / review required).
+- **Exit Codes Contract:**
+  - `0`: Route succeeded and skill identified (or installed).
+  - `1`: Unrouted (no skill needed, no match, or uncertain below threshold).
   - `2`: Operational failure (missing API key, network timeout, invalid JSON, or missing library).
 
 ---

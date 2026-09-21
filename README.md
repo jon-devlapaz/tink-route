@@ -80,10 +80,25 @@ Pass `--install` (`-i`) to automatically invoke `tink skill add <winner>`:
 tink-route -i "Create WebGL particle simulation with custom GLSL shaders"
 # Output:
 # Recommended Skill: threejs-shaders (p=0.85, conf=0.85, noul=0.93)
-# Installed into .agents/skills/threejs-shaders/
+# Installed: .agents/skills/threejs-shaders/SKILL.md
 ```
 
-### 4. JSON Output (`--json`)
+### 4. Exit Code Contract
+Designed for clean scripting and deterministic agent branching:
+- **`0`**: Route succeeded (skill identified, and installed if `-i` was passed).
+- **`1`**: Unrouted (`no_skill_needed`, `no_match`, or `uncertain` below threshold).
+- **`2`**: Operational error (missing `TYPESAFE_API_KEY`, library directory not found, or API error).
+
+```bash
+# Example shell branching:
+if tink-route -i "$TASK"; then
+    echo "Specialist skill installed and ready."
+else
+    echo "No specialist skill needed; using standard tools."
+fi
+```
+
+### 5. JSON Output (`--json`)
 For programmatic invocation by AI agents:
 
 ```bash
