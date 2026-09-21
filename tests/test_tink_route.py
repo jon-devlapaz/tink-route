@@ -192,6 +192,74 @@ description: A skill without explicit name.
             with patch.object(sys, "argv", ["tink-route", "some task"]):
                 self.assertEqual(main(), 1)
 
+    def test_ephemeral_ledger_recording(self):
+        import tempfile
+        from tink_route.ephemeral import load_ephemeral_skills, record_ephemeral_skill
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            self.assertEqual(load_ephemeral_skills(tmppath), [])
+
+            record_ephemeral_skill(tmppath, "threejs-shaders")
+            self.assertEqual(load_ephemeral_skills(tmppath), ["threejs-shaders"])
+
+            # Idempotent addition
+            record_ephemeral_skill(tmppath, "threejs-shaders")
+            self.assertEqual(load_ephemeral_skills(tmppath), ["threejs-shaders"])
+
+            record_ephemeral_skill(tmppath, "cro")
+            self.assertEqual(load_ephemeral_skills(tmppath), ["threejs-shaders", "cro"])
+
+    @patch("subprocess.run")
+    def test_prune_ephemeral_skills_with_manifest_protection(self, mock_subprocess):
+        import tempfile
+        from tink_route.ephemeral import prune_ephemeral_skills, record_ephemeral_skill
+
+        mock_subprocess.return_value.returncode = 0
+        mock_subprocess.return_value.stdout = "Removed skill"
+        mock_subprocess.return_value.stderr = ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            skills_dir = tmppath / ".agents" / "skills"
+            skills_dir.mkdir(parents=True)
+
+            # 1. Ephemeral skill: threejs-shaders
+            (skills_dir / "threejs-shaders").mkdir()
+            (skills_dir / "threejs-shaders" / "SKILL.md").write_text("threejs")
+            record_ephemeral_skill(tmppath, "threejs-shaders")
+
+            # 2. Pinned permanent skill in skills.toml: my-permanent-skill
+            (skills_dir / "my-permanent-skill").mkdir()
+            (skills_dir / "my-permanent-skill" / "SKILL.md").write_text("permanent")
+            tink_dir = tmppath / ".tink"
+            tink_dir.mkdir(exist_ok=True)
+            (tink_dir / "skills.toml").write_text('[[skills]]\nname = "my-permanent-skill"\n')
+
+            # 3. Reserved skill: manage-tink
+            (skills_dir / "manage-tink").mkdir()
+            (skills_dir / "manage-tink" / "SKILL.md").write_text("manage-tink")
+
+            # Test Dry Run first
+            dry_res = prune_ephemeral_skills(tmppath, dry_run=True)
+            self.assertEqual(dry_res["pruned"], ["threejs-shaders"])
+            self.assertIn("manage-tink", dry_res["preserved"])
+            self.assertIn("my-permanent-skill", dry_res["preserved"])
+            mock_subprocess.assert_not_called()
+
+            # Test Actual Pruning
+            live_res = prune_ephemeral_skills(tmppath, dry_run=False)
+            self.assertEqual(live_res["pruned"], ["threejs-shaders"])
+            self.assertIn("manage-tink", live_res["preserved"])
+            self.assertIn("my-permanent-skill", live_res["preserved"])
+            mock_subprocess.assert_called_once_with(
+                ["tink", "skill", "remove", "threejs-shaders"],
+                cwd=str(tmppath),
+                capture_output=True,
+                text=True,
+                check=False
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

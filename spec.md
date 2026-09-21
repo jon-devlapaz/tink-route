@@ -18,14 +18,42 @@ Reference: `intent.md` (2026-09-21)
 
 ### 2.1 CLI Interface
 - **Executable path:** `~/.local/bin/tink-route`
-- **Usage:** `tink-route "<request>" [options]`
+- **Routing Usage:** `tink-route "<request>" [options]`
+- **Pruning Usage:** `tink-route prune [options]`
 - **Options:**
   - `-i`, `--install`: Automatically execute `tink skill add <winner>` upon a qualifying route decision.
-  - `--threshold <float>`: Minimum probability threshold for the Stage 1 need gate and Stage 2 selection (default: `0.55`).
+  - `--ephemeral / --no-ephemeral`: Mark skill as ephemeral in `.tink/ephemeral.json` for automatic pruning (default: `true` when `-i` is used).
+  - `--threshold <float>`: Minimum probability threshold for the Stage 1 need gate and Stage 2 selection (default: `0.60`).
   - `--json`: Output full routing diagnostics and decision in machine-readable JSON.
   - `--library <path>`: Directory containing skill candidate trees (default: `~/.tink/skills`).
   - `--model <name>`: Pinned Jev model identifier (default: `jev-1.13.0`).
+  - `--dry-run`: Used with `prune` to preview which skills would be removed without modifying `.agents/skills/`.
+  - `-v`, `--version`: Output installed version.
   - `-h`, `--help`: Display usage information.
+
+### 2.2 Ephemeral Ledger & Pruning Subcommand
+- **Storage:** Stored in `<project>/.tink/ephemeral.json`:
+  ```json
+  {
+    "version": 1,
+    "skills": ["threejs-shaders"]
+  }
+  ```
+- **Pruning Algorithm (`tink-route prune`):**
+  1. Read `.tink/ephemeral.json` if it exists.
+  2. Read `.tink/skills.toml` if it exists to identify pinned permanent skills.
+  3. Formulate the set of pruning candidates:
+     - All skills in `.tink/ephemeral.json`, plus any installed skill in `.agents/skills/` that is not declared in `.tink/skills.toml`.
+     - **Exceptions:** Never prune `manage-tink`, never prune skills explicitly declared in `.tink/skills.toml`.
+  4. If `--dry-run`:
+     - Print eligible skills and exit `0`.
+  5. For each qualifying skill:
+     - Invoke `tink skill remove <name>`.
+     - Remove skill from `.tink/ephemeral.json`.
+  6. Output count and list of removed skills:
+     `Pruned 1 ephemeral skill(s): threejs-shaders`
+     `Clean state confirmed in .agents/skills/.`
+  7. Exit code: `0` if skills were pruned, `1` if no ephemeral skills existed to prune.
 
 ### 2.2 Stage 1: Specialist Need Gate (Noul)
 - Before comparing any library skills, the utility constructs a Jev `noul` question evaluating whether an external skill is required.

@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from . import __version__
 from .client import DEFAULT_MODEL, DEFAULT_THRESHOLD, JevRouterClient
+from .ephemeral import prune_ephemeral_skills, record_ephemeral_skill
 from .metadata import load_library_skills
 
 DEFAULT_LIBRARY_PATH = Path.home() / ".tink" / "skills"
@@ -43,7 +44,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"%(prog)s {__version__}",
     )
-    parser.add_argument("task", nargs="?", help="The user's task or query description to evaluate.")
+    parser.add_argument(
+        "task",
+        nargs="?",
+        help="The task description to evaluate, or 'prune' to sweep ephemeral skills.",
+    )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="Prune ephemeral/unpinned skills from .agents/skills/.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview skills eligible for pruning without removing them.",
+    )
+    parser.add_argument(
+        "--ephemeral",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Track installed skill in .tink/ephemeral.json for automatic pruning (default: true).",
+    )
     parser.add_argument(
         "-i",
         "--install",
@@ -74,6 +95,28 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+
+    # Handle prune command (either `tink-route prune` or `tink-route --prune`)
+    if args.task == "prune" or args.prune:
+        res = prune_ephemeral_skills(Path.cwd(), dry_run=args.dry_run)
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            if res.get("dry_run"):
+                if res["pruned"]:
+                    print(f"Eligible for pruning ({res['count']}): {', '.join(res['pruned'])}")
+                else:
+                    print("No transient skills eligible for pruning.")
+            else:
+                if res["pruned"]:
+                    print(f"Pruned {res['count']} ephemeral skill(s): {', '.join(res['pruned'])}")
+                    print("Clean state confirmed in .agents/skills/.")
+                else:
+                    print("No ephemeral skills to prune.")
+                if res.get("errors"):
+                    for err in res["errors"]:
+                        print(f"Error removing {err['skill']}: {err['error']}", file=sys.stderr)
+        return 0 if res["count"] > 0 else 1
 
     if not args.task:
         parser.print_help()
@@ -114,6 +157,8 @@ def main() -> int:
         result["installed"] = install_res["success"]
         result["skill_path"] = install_res.get("skill_path")
         result["install_output"] = install_res["stdout"] or install_res["stderr"]
+        if install_res["success"] and args.ephemeral:
+            record_ephemeral_skill(Path.cwd(), result["winner"])
         if not install_res["success"]:
             result["install_error"] = install_res["stderr"]
 

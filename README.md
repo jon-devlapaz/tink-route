@@ -98,7 +98,25 @@ else
 fi
 ```
 
-### 5. JSON Output (`--json`)
+### 5. Milestone Pruning (`tink-route prune`)
+Eliminates manual cleanup bookkeeping. Skills installed with `-i` are tracked in `.tink/ephemeral.json`. At the end of a session or milestone:
+
+```bash
+# Preview what would be removed:
+tink-route prune --dry-run
+# Output: Eligible for pruning (1): threejs-shaders
+
+# Sweep all transient skills in one shot:
+tink-route prune
+# Output:
+# Pruned 1 ephemeral skill(s): threejs-shaders
+# Clean state confirmed in .agents/skills/.
+```
+
+- **Manifest Protection:** Skills declared in `.tink/skills.toml` and reserved skills (`manage-tink`) are **strictly protected** and never pruned.
+- **Pass `--no-ephemeral`:** To install a permanent skill without ephemeral tracking: `tink-route -i --no-ephemeral "<task>"`.
+
+### 6. JSON Output (`--json`)
 For programmatic invocation by AI agents:
 
 ```bash

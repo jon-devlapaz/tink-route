@@ -1,48 +1,50 @@
-# Plan: Dynamic Agent Skill Routing v0.1.1 Enhancements (from `spec.md` 2026-09-21)
+# Plan: Dynamic Agent Skill Routing v0.2.0 Ephemeral & Prune Engine (from `spec.md` 2026-09-21)
 
 ## Files that change
-- `src/tink_route/client.py`: Return runner-up candidate and margin when `status == "uncertain"`.
-- `src/tink_route/cli.py`: Emit exact `.agents/skills/<winner>/SKILL.md` path on install; apply exit code contract (0=routed, 1=unrouted/no-op, 2=error).
-- `src/tink_route/__init__.py`: Bump `__version__ = "0.1.1"`.
-- `pyproject.toml`: Bump version to `0.1.1`.
-- `tests/test_tink_route.py`: Unit tests asserting exit code contract and exact SKILL.md path emission.
-- `README.md`: Update usage examples and exit code documentation.
+- `src/tink_route/ephemeral.py`: New module managing `.tink/ephemeral.json` ledger, reading `.tink/skills.toml`, and pruning unpinned skills.
+- `src/tink_route/cli.py`: Add `prune` command (and `--prune` alias), `--ephemeral` flag on install, and wire into `ephemeral.py`.
+- `src/tink_route/__init__.py`: Bump `__version__ = "0.2.0"`.
+- `pyproject.toml`: Bump version to `0.2.0`.
+- `tests/test_tink_route.py`: Tests for ephemeral recording, manifest protection, and prune execution.
+- `README.md`: Document `tink-route prune` and ephemeral lifecycle.
 
 ## Order of work
 
-1. **Test-First Updates:**
-   - Update `tests/test_tink_route.py` with test cases verifying:
-     - Return code `0` when `status == "routed"`.
-     - Return code `1` when `status == "no_skill_needed"` or `"uncertain"`.
-     - Output contains `.agents/skills/<winner>/SKILL.md` on successful install.
-     - Output contains runner-up name and margin on uncertain decisions.
+1. **Test-First Scaffold:**
+   - Author tests in `tests/test_tink_route.py`:
+     - Test adding a skill to `.tink/ephemeral.json`.
+     - Test `prune_ephemeral_skills()` removes ephemeral skills via `tink skill remove`.
+     - Test `prune_ephemeral_skills()` preserves `manage-tink` and skills declared in `.tink/skills.toml`.
+     - Test `tink-route prune --dry-run` reports candidates without running removal.
+     - Test CLI dispatch to `prune`.
 
-2. **Implement Core Enhancements:**
-   - `client.py`: Sort probabilities to extract `top_candidate`, `runner_up`, and `margin`.
-   - `cli.py`: Update human-readable output to print `Installed: .agents/skills/{winner}/SKILL.md`. Update `main()` return value according to exit code contract.
-   - Version bump to `0.1.1`.
+2. **Implement `src/tink_route/ephemeral.py`:**
+   - Functions: `record_ephemeral_skill(project_dir, skill_name)`, `load_ephemeral_skills(project_dir)`, `load_pinned_skills(project_dir)`, `prune_ephemeral_skills(project_dir, dry_run=False)`.
+   - Protects `manage-tink` and pinned skills.
+   - Cleans up `.tink/ephemeral.json` after successful removals.
 
-3. **Verify Locally Against Test Suite:**
+3. **Wire into `cli.py`:**
+   - Add positional `subcommand` or flag check: if first arg is `"prune"`, dispatch to prune handler.
+   - On `tink-route -i`, automatically record installed skill in `.tink/ephemeral.json` unless `--no-ephemeral` is supplied.
+   - Version bump to `0.2.0`.
+
+4. **Verify Locally Against Test Suite:**
    - Run `PYTHONPATH=src python3 -m unittest discover -s tests -v`.
    - Ensure 100% pass rate.
-
-4. **Verify Live CLI Execution:**
-   - Probe standard coding query $\to$ verify exit code `1`.
-   - Probe specialist query with `-i` $\to$ verify `Installed: .agents/skills/.../SKILL.md` and exit code `0`.
-   - Probe ambiguous query $\to$ verify runner-up explanation and exit code `1`.
 
 5. **Deploy & Release (Stage 5):**
    - Commit changes with semantic commit message.
    - Push to GitHub `main`.
    - Verify GitHub Actions CI run.
-   - Create GitHub release `v0.1.1`.
+   - Create GitHub release `v0.2.0`.
 
 ## Risks
-- Shell scripts expecting exit code `0` for `no_skill_needed`:
-  - *Mitigation:* Document clearly in README. Standard Unix semantics treat non-matching search/routing as exit 1 (matching `grep`, `diff`, `test`). `--json` output remains backwards compatible.
+- Corrupting or over-pruning pinned skills:
+  - *Mitigation:* Explicit protection: if `.tink/skills.toml` contains `name = "..."`, or if name is `manage-tink`, never remove it.
+  - Provide `--dry-run` flag so users and agents can preview.
 
 ## Proof
 - All unit tests pass in `tests/test_tink_route.py`.
-- `tink-route "Fix typo"; echo $?` prints `1`.
-- `tink-route "Create GLSL shader"; echo $?` prints `0`.
-- GitHub Actions CI workflow passes on all 3 Python versions.
+- `tink-route -i "<task>"` records in `.tink/ephemeral.json`.
+- `tink-route prune` removes the skill and restores clean `.agents/skills/`.
+- GitHub Actions CI workflow passes on Python 3.11, 3.12, 3.13.
