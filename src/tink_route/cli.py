@@ -202,8 +202,8 @@ def main() -> int:
             print(f"Recommended Skill: {winner} (p={p:.2f}, conf={conf:.2f}, noul={result['specialist_noul']:.2f})")
             if result.get("installed"):
                 print(f"Installed: {result.get('skill_path')}")
-                if result.get("references"):
-                    print(f"References: {', '.join(result['references'])}")
+                refs = result.get("references", [])
+                print(f"References: {', '.join(refs) if refs else '(none)'}")
                 if result.get("scripts"):
                     print(f"Scripts: {', '.join(result['scripts'])}")
             elif args.install and not result.get("installed"):
