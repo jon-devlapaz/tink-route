@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from . import __version__
 from .client import DEFAULT_MODEL, DEFAULT_THRESHOLD, JevRouterClient
@@ -14,21 +14,45 @@ from .metadata import load_library_skills
 DEFAULT_LIBRARY_PATH = Path.home() / ".tink" / "skills"
 
 
-def install_skill(skill_name: str) -> Dict[str, Any]:
-    """Execute `tink skill add <skill_name>` to install skill into project."""
+def install_skill(skill_name: str, project_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Execute `tink skill add <skill_name>` and inspect installed assets."""
+    cwd = project_dir or Path.cwd()
     res = subprocess.run(
         ["tink", "skill", "add", skill_name],
+        cwd=str(cwd),
         capture_output=True,
         text=True,
         check=False,
     )
+    skill_dir = cwd / ".agents" / "skills" / skill_name
     skill_rel_path = f".agents/skills/{skill_name}/SKILL.md"
+
+    references = []
+    scripts = []
+    if res.returncode == 0 and skill_dir.is_dir():
+        ref_dir = skill_dir / "references"
+        if ref_dir.is_dir():
+            references = [
+                str(p.relative_to(skill_dir))
+                for p in sorted(ref_dir.iterdir())
+                if p.is_file() and not p.name.startswith(".")
+            ]
+        scr_dir = skill_dir / "scripts"
+        if scr_dir.is_dir():
+            scripts = [
+                str(p.relative_to(skill_dir))
+                for p in sorted(scr_dir.iterdir())
+                if p.is_file() and not p.name.startswith(".")
+            ]
+
     return {
         "success": res.returncode == 0,
         "stdout": res.stdout.strip(),
         "stderr": res.stderr.strip(),
         "code": res.returncode,
         "skill_path": skill_rel_path if res.returncode == 0 else None,
+        "references": references,
+        "scripts": scripts,
     }
 
 
@@ -156,6 +180,8 @@ def main() -> int:
         install_res = install_skill(result["winner"])
         result["installed"] = install_res["success"]
         result["skill_path"] = install_res.get("skill_path")
+        result["references"] = install_res.get("references", [])
+        result["scripts"] = install_res.get("scripts", [])
         result["install_output"] = install_res["stdout"] or install_res["stderr"]
         if install_res["success"] and args.ephemeral:
             record_ephemeral_skill(Path.cwd(), result["winner"])
@@ -176,6 +202,10 @@ def main() -> int:
             print(f"Recommended Skill: {winner} (p={p:.2f}, conf={conf:.2f}, noul={result['specialist_noul']:.2f})")
             if result.get("installed"):
                 print(f"Installed: {result.get('skill_path')}")
+                if result.get("references"):
+                    print(f"References: {', '.join(result['references'])}")
+                if result.get("scripts"):
+                    print(f"Scripts: {', '.join(result['scripts'])}")
             elif args.install and not result.get("installed"):
                 print(f"Installation failed: {result.get('install_error', '')}", file=sys.stderr)
             else:

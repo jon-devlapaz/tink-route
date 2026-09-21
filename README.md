@@ -74,13 +74,14 @@ tink-route "Create WebGL particle simulation with custom GLSL shaders"
 ```
 
 ### 3. Atomic Install (`--install` / `-i`)
-Pass `--install` (`-i`) to automatically invoke `tink skill add <winner>`:
+Pass `--install` (`-i`) to automatically invoke `tink skill add <winner>`. It surfaces `SKILL.md` plus any bundled reference guides or scripts in a single hop:
 
 ```bash
-tink-route -i "Create WebGL particle simulation with custom GLSL shaders"
+tink-route -i "Audit e-commerce checkout flow to optimize conversion rate"
 # Output:
-# Recommended Skill: threejs-shaders (p=0.85, conf=0.85, noul=0.93)
-# Installed: .agents/skills/threejs-shaders/SKILL.md
+# Recommended Skill: cro (p=1.00, conf=0.99, noul=0.92)
+# Installed: .agents/skills/cro/SKILL.md
+# References: references/experiments.md, references/form.md
 ```
 
 ### 4. Exit Code Contract

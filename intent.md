@@ -1,29 +1,27 @@
 # Intent: Dynamic Agent Skill Routing via Tink & Jev
 
-Author: jondev (system architect) & pi. Status: approved (v0.2.0 iteration).
+Author: jondev (system architect) & pi. Status: approved (v0.3.0 iteration).
 
 ## Problem
 - **Progressive Disclosure Overhead:** Pi and the Agent Skills standard inject every discovered skill's `<name>` and `<description>` into the agent's system prompt on every turn. Across 40+ skills in a library, this burns 2,500–5,000+ tokens per turn and causes attention dilution, prompt pollution, and false-positive activations on standard coding tasks.
 - **Inventory Mismatch:** Tink intentionally isolates its cold/warm skill library in `~/.tink/skills/` (not an agent discovery root). Only skills explicitly promoted to `<project>/.agents/skills/` should be visible to agents.
-- **Manual Pruning Bookkeeping Friction:** During dogfooding, agents successfully route and install skills, but the manual cleanup requirement (`tink skill remove <name>` per `AGENTS.md`) is a recurring structural friction point. When forgotten, ad-hoc transient skills accumulate in `.agents/skills/`, diluting project hygiene.
+- **Sub-Guide Discovery Gap (v0.2.0 Dogfood Finding):** Skills like `cro`, `landing-page`, `skill-scout`, and `threejs-shaders` bundle specialized sub-guides under `references/` (e.g. `references/form.md`, `references/experiments.md`). When `tink-route -i` only surfaces `SKILL.md`, agents must execute manual filesystem inspection (`ls`) to discover these critical domain guides.
 
 ## Proposed outcome
 - A deterministic CLI utility, `tink-route`, installed at `~/.local/bin/tink-route`.
-- **Ephemeral Skill Tracking:**
-  - When `tink-route -i` installs an ad-hoc skill, it records it in `.tink/ephemeral.json` (or tracks it as unpinned).
-  - An optional `--no-ephemeral` flag allows installing permanent skills without ephemeral tagging.
-- **Atomic Milestone Pruning (`tink-route prune`):**
-  - Sweeps all ephemeral/unpinned skills from `.agents/skills/` using `tink skill remove`.
-  - Strictly protects skills pinned in `.tink/skills.toml` and reserved infrastructure skills (`manage-tink`).
-  - Supports `--dry-run` to preview skills eligible for pruning.
+- **Bundled Reference & Script Surfacing:**
+  - Upon installation (`-i`), `tink-route` scans the installed directory and surfaces `SKILL.md` plus any bundled references (`references/*.md`) and scripts (`scripts/*`).
+  - Output:
+    `Installed: .agents/skills/cro/SKILL.md`
+    `References: references/experiments.md, references/form.md, references/saas.md`
+  - Eliminates secondary `ls` probing and achieves true single-hop domain discovery.
+- **Ephemeral Skill Tracking & Atomic Pruning:**
+  - `tink-route -i` records installed skills in `<project>/.tink/ephemeral.json`.
+  - `tink-route prune` sweeps all transient skills while preserving `.tink/skills.toml` and `manage-tink`.
 - **Two-stage semantic gating powered by TypeSafe Jev (`jev-1.13.0`):**
-  1. *Stage 1 (Need Gate):* A Noul evaluation ($p < 0.60$ exits with code `1`, `no_skill_needed`).
+  1. *Stage 1 (Need Gate):* Noul evaluation ($p < 0.60$ exits with code `1`, `no_skill_needed`).
   2. *Stage 2 (Candidate Selection):* Jev Choice evaluation with top candidate, runner-up, and margin.
-- **Semantic Exit Codes:**
-  - `0`: Route succeeded / prune executed successfully.
-  - `1`: No skill needed / uncertain / no skills to prune.
-  - `2`: Fatal/operational error.
-- **Single-Hop Agent Reading:** On auto-install (`-i`), output the exact path to `.agents/skills/<name>/SKILL.md`.
+- **Semantic Exit Codes:** `0` (routed/pruned), `1` (unrouted/no-op), `2` (error).
 
 ## Affected users and systems
 - **Users:** Developers interacting with AI agents (Pi, Claude Code, Codex).

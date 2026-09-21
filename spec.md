@@ -80,8 +80,14 @@ Reference: `intent.md` (2026-09-21)
 - When `status == "routed"` and `--install` is supplied:
   - Verify that the target project has an initialized `.agents/` or create it if missing via `tink skill add`.
   - Execute `tink skill add <winner>`.
+  - Scan `.agents/skills/<winner>/` for bundled assets:
+    - `skill_path`: `.agents/skills/<winner>/SKILL.md`
+    - `references`: relative paths of files in `.agents/skills/<winner>/references/`
+    - `scripts`: relative paths of files in `.agents/skills/<winner>/scripts/`
   - Output format:
     `Installed: .agents/skills/<winner>/SKILL.md`
+    `References: references/experiments.md, references/form.md, references/saas.md` (if references exist)
+    `Scripts: scripts/audit.sh` (if scripts exist)
   - Exit code: `0`.
 - When `status == "routed"` and `--install` is not supplied:
   - Output winner, confidence, probability, and instructions to install:

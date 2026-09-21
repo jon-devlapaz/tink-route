@@ -111,20 +111,28 @@ description: A skill without explicit name.
         self.assertEqual(mock_urlopen.call_count, 2)
 
     @patch("subprocess.run")
-    def test_install_flag_executes_tink(self, mock_subprocess):
+    def test_install_flag_surfaces_references_and_scripts(self, mock_subprocess):
+        import tempfile
+
         mock_subprocess.return_value.returncode = 0
-        mock_subprocess.return_value.stdout = "Added threejs-shaders"
+        mock_subprocess.return_value.stdout = "Added cro"
         mock_subprocess.return_value.stderr = ""
 
-        outcome = install_skill("threejs-shaders")
-        self.assertTrue(outcome["success"])
-        self.assertEqual(outcome["skill_path"], ".agents/skills/threejs-shaders/SKILL.md")
-        mock_subprocess.assert_called_once_with(
-            ["tink", "skill", "add", "threejs-shaders"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            cro_dir = tmppath / ".agents" / "skills" / "cro"
+            (cro_dir / "references").mkdir(parents=True)
+            (cro_dir / "scripts").mkdir(parents=True)
+            (cro_dir / "SKILL.md").write_text("cro")
+            (cro_dir / "references" / "form.md").write_text("form")
+            (cro_dir / "references" / "experiments.md").write_text("experiments")
+            (cro_dir / "scripts" / "audit.sh").write_text("#!/bin/sh")
+
+            outcome = install_skill("cro", project_dir=tmppath)
+            self.assertTrue(outcome["success"])
+            self.assertEqual(outcome["skill_path"], ".agents/skills/cro/SKILL.md")
+            self.assertEqual(outcome["references"], ["references/experiments.md", "references/form.md"])
+            self.assertEqual(outcome["scripts"], ["scripts/audit.sh"])
 
     @patch("urllib.request.urlopen")
     def test_stage_2_uncertain_extracts_runner_up(self, mock_urlopen):
