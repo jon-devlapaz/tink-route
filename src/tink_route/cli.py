@@ -17,42 +17,62 @@ DEFAULT_LIBRARY_PATH = Path.home() / ".tink" / "skills"
 def install_skill(skill_name: str, project_dir: Optional[Path] = None) -> Dict[str, Any]:
     """Execute `tink skill add <skill_name>` and inspect installed assets."""
     cwd = project_dir or Path.cwd()
-    res = subprocess.run(
-        ["tink", "skill", "add", skill_name],
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
     skill_dir = cwd / ".agents" / "skills" / skill_name
+    was_pre_existing = (skill_dir / "SKILL.md").is_file()
+
+    try:
+        res = subprocess.run(
+            ["tink", "skill", "add", skill_name],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        success = (res.returncode == 0)
+        stdout = res.stdout.strip()
+        stderr = res.stderr.strip()
+        code = res.returncode
+    except FileNotFoundError:
+        return {
+            "success": False,
+            "stdout": "",
+            "stderr": "tink executable not found in PATH",
+            "code": 2,
+            "skill_path": None,
+            "references": [],
+            "scripts": [],
+            "was_pre_existing": was_pre_existing,
+        }
+
     skill_rel_path = f".agents/skills/{skill_name}/SKILL.md"
 
     references = []
     scripts = []
-    if res.returncode == 0 and skill_dir.is_dir():
+    if success and skill_dir.is_dir():
         ref_dir = skill_dir / "references"
         if ref_dir.is_dir():
             references = [
-                str(p.relative_to(skill_dir))
+                p.relative_to(skill_dir).as_posix()
                 for p in sorted(ref_dir.iterdir())
                 if p.is_file() and not p.name.startswith(".")
             ]
         scr_dir = skill_dir / "scripts"
         if scr_dir.is_dir():
             scripts = [
-                str(p.relative_to(skill_dir))
+                p.relative_to(skill_dir).as_posix()
                 for p in sorted(scr_dir.iterdir())
                 if p.is_file() and not p.name.startswith(".")
             ]
 
     return {
-        "success": res.returncode == 0,
-        "stdout": res.stdout.strip(),
-        "stderr": res.stderr.strip(),
-        "code": res.returncode,
-        "skill_path": skill_rel_path if res.returncode == 0 else None,
+        "success": success,
+        "stdout": stdout,
+        "stderr": stderr,
+        "code": code,
+        "skill_path": skill_rel_path if success else None,
         "references": references,
         "scripts": scripts,
+        "was_pre_existing": was_pre_existing,
     }
 
 
@@ -127,7 +147,16 @@ def main() -> int:
 
     # Handle prune command (either `tink-route prune` or `tink-route --prune`)
     if args.task == "prune" or args.prune:
-        res = prune_ephemeral_skills(Path.cwd(), dry_run=args.dry_run, all_unpinned=args.all_unpinned)
+        try:
+            res = prune_ephemeral_skills(Path.cwd(), dry_run=args.dry_run, all_unpinned=args.all_unpinned)
+        except Exception as e:
+            err = {"error": str(e)}
+            if args.json:
+                print(json.dumps(err, indent=2))
+            else:
+                print(f"Prune error: {e}", file=sys.stderr)
+            return 2
+
         if args.json:
             print(json.dumps(res, indent=2))
         else:
@@ -145,6 +174,10 @@ def main() -> int:
                 if res.get("errors"):
                     for err in res["errors"]:
                         print(f"Error removing {err['skill']}: {err['error']}", file=sys.stderr)
+        if args.dry_run:
+            return 0
+        if res.get("errors") and res["count"] == 0:
+            return 2
         return 0 if res["count"] > 0 else 1
 
     if not args.task:
@@ -181,6 +214,7 @@ def main() -> int:
         return 2
 
     # Handle installation if requested and routed
+    install_failed = False
     if result["status"] == "routed" and args.install:
         install_res = install_skill(result["winner"])
         result["installed"] = install_res["success"]
@@ -188,20 +222,28 @@ def main() -> int:
         result["references"] = install_res.get("references", [])
         result["scripts"] = install_res.get("scripts", [])
         result["install_output"] = install_res["stdout"] or install_res["stderr"]
-        if install_res["success"] and args.ephemeral:
-            record_ephemeral_skill(Path.cwd(), result["winner"])
-        if not install_res["success"]:
-            result["install_error"] = install_res["stderr"]
-
-    if result["status"] == "routed":
-        entry = result.get("skill_path") or f".agents/skills/{result['winner']}/SKILL.md"
+        if install_res["success"]:
+            if args.ephemeral and not install_res.get("was_pre_existing"):
+                record_ephemeral_skill(Path.cwd(), result["winner"])
+            result["activation"] = {
+                "mode": "direct_read",
+                "entrypoint": result.get("skill_path"),
+                "references": result.get("references", []),
+                "scripts": result.get("scripts", []),
+                "restart_required": False,
+                "instruction": "Read SKILL.md directly; mid-session use does not require session restart.",
+            }
+        else:
+            install_failed = True
+            result["install_error"] = install_res["stderr"] or "Installation failed"
+    elif result["status"] == "routed" and not args.install:
         result["activation"] = {
-            "mode": "direct_read",
-            "entrypoint": entry,
-            "references": result.get("references", []),
-            "scripts": result.get("scripts", []),
+            "mode": "install_required",
+            "entrypoint": None,
+            "references": [],
+            "scripts": [],
             "restart_required": False,
-            "instruction": "Read SKILL.md directly; mid-session use does not require session restart.",
+            "instruction": f"Run 'tink skill add {result['winner']}' to install before reading.",
         }
 
     if args.json:
@@ -241,7 +283,9 @@ def main() -> int:
     # Semantic exit code contract:
     # 0 = routed successfully (and installed if -i was passed)
     # 1 = unrouted (no skill needed or decision uncertain)
-    # 2 = error (returned earlier)
+    # 2 = error (installation failed, API error, missing key/library)
+    if install_failed:
+        return 2
     return 0 if result["status"] == "routed" else 1
 
 

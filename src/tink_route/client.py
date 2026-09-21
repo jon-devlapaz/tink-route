@@ -74,6 +74,8 @@ class JevRouterClient:
 
         stage1_resp = self._call_api(stage1_payload)
         stage1_answers = stage1_resp.get("answers", {})
+        if not stage1_answers or "specialist_needed" not in stage1_answers:
+            raise RuntimeError(f"Invalid API response from TypeSafe: missing specialist_needed answer: {stage1_resp}")
         noul_answer = stage1_answers.get("specialist_needed", {})
         specialist_noul = float(noul_answer.get("noul", 0.0))
 
@@ -124,17 +126,24 @@ class JevRouterClient:
             winner_prob = float(probs.get(winner, conf))
         else:
             batch_winners = []
+            batch_reasons = []
             for i in range(0, len(skills), BATCH_SIZE):
                 chunk = skills[i : i + BATCH_SIZE]
                 b_resp = evaluate_batch(chunk)
                 b_ans = b_resp.get("answers", {}).get("selected_skill", {})
                 b_winner = b_ans.get("choice")
+                b_conf = float(b_ans.get("confidence", 0.0))
+                b_probs = b_ans.get("probabilities", {})
+                b_prob = float(b_probs.get(b_winner, b_conf)) if b_winner else 0.0
+                batch_reasons.append({
+                    "winner": b_winner,
+                    "confidence": b_conf,
+                    "probabilities": b_probs,
+                    "probability": b_prob,
+                })
                 if b_winner and b_winner not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL):
                     matching = [s for s in chunk if s["name"] == b_winner]
                     if matching:
-                        b_conf = float(b_ans.get("confidence", 0.0))
-                        b_probs = b_ans.get("probabilities", {})
-                        b_prob = float(b_probs.get(b_winner, b_conf))
                         batch_winners.append({
                             "skill": matching[0],
                             "winner": b_winner,
@@ -158,10 +167,20 @@ class JevRouterClient:
                 probs = bw["probabilities"]
                 winner_prob = bw["probability"]
             else:
-                winner = NO_SKILL_SENTINEL
-                conf = 0.0
-                winner_prob = 0.0
-                probs = {NO_SKILL_SENTINEL: 0.0}
+                # If all batches returned NO_MATCH_SENTINEL, preserve authentic no_match
+                no_match_batches = [br for br in batch_reasons if br["winner"] == NO_MATCH_SENTINEL]
+                if no_match_batches:
+                    best = max(no_match_batches, key=lambda br: br["probability"])
+                    winner = NO_MATCH_SENTINEL
+                    conf = best["confidence"]
+                    winner_prob = best["probability"]
+                    probs = best["probabilities"] or {NO_MATCH_SENTINEL: winner_prob}
+                else:
+                    best = max(batch_reasons, key=lambda br: br["probability"]) if batch_reasons else None
+                    winner = best["winner"] if best else NO_SKILL_SENTINEL
+                    conf = best["confidence"] if best else 0.0
+                    winner_prob = best["probability"] if best else 0.0
+                    probs = best["probabilities"] if best else {NO_SKILL_SENTINEL: 0.0}
 
         elapsed = int((time.time() - start_time) * 1000)
 

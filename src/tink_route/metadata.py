@@ -17,14 +17,15 @@ def parse_skill_metadata(content: str, fallback_name: str) -> Dict[str, str]:
             if trimmed == "---":
                 break
             if line.startswith("name:"):
-                name = line.split(":", 1)[1].strip() or fallback_name
+                raw_name = line.split(":", 1)[1].strip()
+                name = raw_name.strip("\"'") or fallback_name
                 in_multiline_desc = False
             elif line.startswith("description:"):
                 rest = line.split(":", 1)[1].strip()
                 if rest in (">", "|"):
                     in_multiline_desc = True
                 else:
-                    description = rest
+                    description = rest.strip("\"'")
                     in_multiline_desc = False
             elif in_multiline_desc:
                 if line.startswith("  ") or line.startswith("\t"):

@@ -1,10 +1,15 @@
 import json
-import re
 import subprocess
+import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
 RESERVED_SKILLS = {"manage-tink"}
+
+
+class ManifestSyntaxError(ValueError):
+    """Raised when .tink/skills.toml exists but cannot be parsed."""
+    pass
 
 
 def get_tink_dir(project_dir: Path) -> Path:
@@ -19,7 +24,12 @@ def load_ephemeral_skills(project_dir: Path) -> List[str]:
         return []
     try:
         data = json.loads(ledger_file.read_text(encoding="utf-8"))
-        return data.get("skills", [])
+        if not isinstance(data, dict):
+            return []
+        raw_skills = data.get("skills")
+        if not isinstance(raw_skills, list):
+            return []
+        return [s for s in raw_skills if isinstance(s, str)]
     except Exception:
         return []
 
@@ -38,14 +48,24 @@ def load_pinned_skills(project_dir: Path) -> Set[str]:
     manifest_file = project_dir / ".tink" / "skills.toml"
     if not manifest_file.is_file():
         return set()
-    pinned = set()
     try:
         content = manifest_file.read_text(encoding="utf-8")
-        # Match `name = "skill-name"` in TOML without external toml parser
-        matches = re.findall(r'name\s*=\s*["\']([^"\']+)["\']', content)
-        pinned.update(matches)
-    except Exception:
-        pass
+        data = tomllib.loads(content)
+    except Exception as e:
+        raise ManifestSyntaxError(f"Malformed manifest in {manifest_file}: {e}") from e
+
+    pinned = set()
+    skills_section = data.get("skills")
+    if isinstance(skills_section, list):
+        for item in skills_section:
+            if isinstance(item, dict) and "name" in item and isinstance(item["name"], str):
+                pinned.add(item["name"])
+    elif isinstance(skills_section, dict):
+        for k, v in skills_section.items():
+            if isinstance(v, dict) and "name" in v and isinstance(v["name"], str):
+                pinned.add(v["name"])
+            elif isinstance(k, str):
+                pinned.add(k)
     return pinned
 
 
@@ -93,17 +113,20 @@ def prune_ephemeral_skills(project_dir: Path, dry_run: bool = False, all_unpinne
     errors = []
 
     for skill in prunable:
-        res = subprocess.run(
-            ["tink", "skill", "remove", skill],
-            cwd=str(project_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if res.returncode == 0:
-            pruned_successfully.append(skill)
-        else:
-            errors.append({"skill": skill, "error": res.stderr.strip() or res.stdout.strip()})
+        try:
+            res = subprocess.run(
+                ["tink", "skill", "remove", skill],
+                cwd=str(project_dir),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0:
+                pruned_successfully.append(skill)
+            else:
+                errors.append({"skill": skill, "error": res.stderr.strip() or res.stdout.strip()})
+        except FileNotFoundError:
+            errors.append({"skill": skill, "error": "tink executable not found in PATH"})
 
     # Update ephemeral ledger
     remaining_ephemeral = [s for s in ephemeral_tracked if s not in pruned_successfully]
@@ -120,3 +143,4 @@ def prune_ephemeral_skills(project_dir: Path, dry_run: bool = False, all_unpinne
         "dry_run": False,
         "count": len(pruned_successfully),
     }
+

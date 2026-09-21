@@ -101,16 +101,18 @@ tink-route -i "Audit e-commerce checkout flow to optimize conversion rate"
 
 ### 5. Exit Code Contract
 Designed for clean scripting and deterministic agent branching:
-- **`0`**: Route succeeded (skill identified, and installed if `-i` was passed).
-- **`1`**: Unrouted (`no_skill_needed`, `no_match`, or `uncertain` below threshold).
-- **`2`**: Operational error (missing `TYPESAFE_API_KEY`, library directory not found, or API error).
+- **`0`**: Route succeeded (skill identified, and installed if `-i` was passed); or `prune` succeeded, or `prune --dry-run` completed cleanly.
+- **`1`**: Unrouted (`no_skill_needed`, `no_match`, or `uncertain` below threshold); or `prune` had no ephemeral skills to prune.
+- **`2`**: Operational error (missing `TYPESAFE_API_KEY`, library directory not found, failed `tink` installation, malformed `.tink/skills.toml`, or missing `tink` binary).
 
 ```bash
 # Example shell branching:
 if tink-route -i "$TASK"; then
     echo "Specialist skill installed and ready."
-else
+elif [ $? -eq 1 ]; then
     echo "No specialist skill needed; using standard tools."
+else
+    echo "Operational error occurred." >&2
 fi
 ```
 
@@ -129,9 +131,9 @@ tink-route prune
 # Clean state confirmed in .agents/skills/.
 ```
 
-- **Ownership Safety:** Only skills recorded in `<project>/.tink/ephemeral.json` are pruned by default. Manual `tink skill add` or other harness installs (Cursor, Claude) are **never touched**.
+- **Ownership Safety:** Only skills installed and recorded by `tink-route -i` are pruned by default. If a skill was already installed manually prior to routing, it is **never adopted** into `.tink/ephemeral.json` and will not be pruned.
+- **Fail-Closed Manifest Protection:** Skills declared in `.tink/skills.toml` (parsed with standard `tomllib`) and reserved skills (`manage-tink`) are **strictly protected** and never pruned in any mode. If `.tink/skills.toml` has invalid syntax, pruning fails closed with exit code `2`.
 - **Broad Sweep (`--all-unpinned`):** To sweep all unpinned skills in `.agents/skills/`, pass `tink-route prune --all-unpinned`.
-- **Manifest Protection:** Skills declared in `.tink/skills.toml` and reserved skills (`manage-tink`) are **strictly protected** and never pruned in any mode.
 - **Pass `--no-ephemeral`:** To install a permanent skill without ephemeral tracking: `tink-route -i --no-ephemeral "<task>"`.
 
 ### 7. JSON Output (`--json`)

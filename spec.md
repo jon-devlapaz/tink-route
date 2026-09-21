@@ -31,7 +31,7 @@ Reference: `intent.md` (2026-09-21)
   - `-v`, `--version`: Output installed version.
   - `-h`, `--help`: Display usage information.
 
-### 2.2 Ephemeral Ledger & Pruning Subcommand
+### 2.2 Ephemeral Ledger, Manifest Protection & Ownership Safety
 - **Storage:** Stored in `<project>/.tink/ephemeral.json`:
   ```json
   {
@@ -39,24 +39,36 @@ Reference: `intent.md` (2026-09-21)
     "skills": ["threejs-shaders"]
   }
   ```
+- **Ledger Schema Hygiene:**
+  - `load_ephemeral_skills()` must safely handle corrupt or malformed JSON (e.g. `{"skills": null}`, `{"skills": [{}]}`). It must extract only string elements: `[s for s in skills if isinstance(s, str)]`.
+- **Fail-Closed Manifest Pinning (`load_pinned_skills`):**
+  - Uses Python 3.11 stdlib `tomllib.loads()` to parse `.tink/skills.toml`.
+  - Supports standard TOML patterns:
+    - Array of tables: `[[skills]]\nname = "cro"` or `[[skills]]\n"name" = "cro"`.
+    - Key-value tables: `[skills.cro]` or `[skills."cro"]`.
+  - **Fail-Closed Invariant:** If `.tink/skills.toml` exists but contains invalid TOML syntax, it raises an operational exception (`ManifestSyntaxError`), aborting pruning before any files are deleted. It must never silently default to an empty set and allow destructive pruning of pinned skills.
+- **Pre-Existing Install Ownership Preservation:**
+  - In `cli.py`, prior to invoking `tink skill add`, check if `.agents/skills/<winner>/SKILL.md` already exists on disk.
+  - If the skill was *already installed* prior to routing and is *not* already recorded in `.tink/ephemeral.json`, it is classified as a pre-existing manual install.
+  - Even after `tink-route -i` runs, this skill must **not** be appended to `ephemeral.json`. Its manual ownership is preserved.
 - **Ownership-Safe Pruning Algorithm (`tink-route prune`):**
-  1. Read `.tink/ephemeral.json` if it exists (`ephemeral_tracked`).
-  2. Read `.tink/skills.toml` if it exists (`pinned`).
+  1. Read `.tink/ephemeral.json` (`ephemeral_tracked`).
+  2. Read `.tink/skills.toml` (`pinned`).
   3. Formulate the set of pruning candidates:
      - **Default Mode (Ledger-Only):** `candidates = ephemeral_tracked & installed`.
        *Only skills installed and recorded by `tink-route -i` are eligible.*
        Manual `tink skill add` or other harness installs (Cursor, Claude) are strictly preserved.
      - **Broad Sweep Mode (`--all-unpinned`):** `candidates = (ephemeral_tracked & installed) | {s for s in installed if s not in pinned}`.
-     - **Invariants:** Never prune `manage-tink`. Never prune skills explicitly declared in `.tink/skills.toml`.
+     - **Invariants:** Never prune `manage-tink`. Never prune skills declared in `.tink/skills.toml`.
   4. If `--dry-run`:
-     - Print eligible skills and exit `0`.
+     - Print eligible skills and exit `0` (even if count is 0).
   5. For each qualifying skill:
      - Invoke `tink skill remove <name>`.
      - Remove skill from `.tink/ephemeral.json`.
   6. Output count and list of removed skills:
      `Pruned 1 ephemeral skill(s): threejs-shaders`
      `Clean state confirmed in .agents/skills/.`
-  7. Exit code: `0` if skills were pruned, `1` if no ephemeral skills existed to prune.
+  7. Exit code: `0` if pruning succeeded or `--dry-run` ran cleanly. Exit `1` if normal prune had no ephemeral skills to prune. Exit `2` if an operational error occurred (e.g. malformed manifest or missing `tink`).
 
 ### 2.2 Stage 1: Specialist Need Gate (Noul)
 - Before comparing any library skills, the utility constructs a Jev `noul` question evaluating whether an external skill is required.
@@ -80,10 +92,14 @@ Reference: `intent.md` (2026-09-21)
       - Exclude sentinels (`__no_skill__`, `__no_match__`) from survivor candidate lists.
       - If multiple batch winners survive: evaluate final Choice reduction across survivors with Jev.
       - If exactly one batch winner survives: **preserve its authentic Jev `confidence` and `probabilities`** from that batch (no synthetic constants).
-      - If zero batch winners survive: winner is `__no_skill__` with Jev-derived probability.
+      - If zero batch winners survive:
+        - If batches returned `__no_match__`, set `winner = __no_match__`, preserve the batch's confidence/probability, and classify status as `no_match` (preserving authentic Stage 1 `specialist_noul`).
+        - Only if batches explicitly chose `__no_skill__` should status become `no_skill_needed`.
 - **Rule:**
   - Top candidate must meet or exceed `threshold`.
-  - If top probability $< \text{threshold}$, return `status: "uncertain"` / `status: "review"`.
+  - If top candidate is `__no_match__`: return `status: "no_match"`.
+  - If top candidate is `__no_skill__`: return `status: "no_skill_needed"`.
+  - If top probability $< \text{threshold}$, return `status: "uncertain"`.
   - Otherwise return `status: "routed"` with the selected skill.
 
 ### 2.4 Mid-Session Skill Activation Contract
@@ -101,15 +117,21 @@ Reference: `intent.md` (2026-09-21)
        "instruction": "Read SKILL.md directly; mid-session use does not require session restart."
      }
      ```
+  5. **Activation Guard Invariants:**
+     - `mode: "direct_read"` is **only emitted when the skill was successfully installed** (or already present on disk).
+     - If `--install` was omitted (recommendation-only), `activation` is omitted or set to `mode: "install_required"`, with `entrypoint: null`, preventing agents from attempting to read uninstalled paths.
+     - If `--install` fails: `activation` is omitted, and the process exits with operational error code `2`.
+     - All paths in `references` and `scripts` must be normalized using POSIX slashes (`.as_posix()`).
 
-### 2.4 Mutation & Execution Hand-off
+### 2.5 Mutation & Execution Hand-off
 - When `status == "routed"` and `--install` is supplied:
-  - Verify that the target project has an initialized `.agents/` or create it if missing via `tink skill add`.
-  - Execute `tink skill add <winner>`.
+  - Check if skill already exists in `.agents/skills/<winner>/SKILL.md`.
+  - Execute `tink skill add <winner>`. If `tink` binary is missing or returns non-zero, exit with code `2`.
+  - Record in `.tink/ephemeral.json` ONLY if the skill was not previously installed.
   - Scan `.agents/skills/<winner>/` for bundled assets:
     - `skill_path`: `.agents/skills/<winner>/SKILL.md`
-    - `references`: relative paths of files in `.agents/skills/<winner>/references/`
-    - `scripts`: relative paths of files in `.agents/skills/<winner>/scripts/`
+    - `references`: relative POSIX paths of files in `.agents/skills/<winner>/references/`
+    - `scripts`: relative POSIX paths of files in `.agents/skills/<winner>/scripts/`
   - Output format:
     `Installed: .agents/skills/<winner>/SKILL.md`
     `References: references/experiments.md, references/form.md, references/saas.md` (if references exist)
@@ -123,6 +145,10 @@ Reference: `intent.md` (2026-09-21)
 - When `status == "no_skill_needed"`:
   - Output:
     `Status: no_skill_needed (specialist_noul: 0.12). Standard coding tools and models are sufficient.`
+  - Exit code: `1`.
+- When `status == "no_match"`:
+  - Output:
+    `Status: no_match (specialist_noul: 0.92). No suitable specialist skill found in library.`
   - Exit code: `1`.
 - When `status == "uncertain"`:
   - Output top candidate, runner up, and margin:
@@ -142,9 +168,9 @@ Reference: `intent.md` (2026-09-21)
   - Never log, echo, or serialize the key in error outputs or payloads.
   - Do not upload file contents or project secrets; only the task description and public skill metadata are transmitted.
 - **Exit Codes Contract:**
-  - `0`: Route succeeded and skill identified (or installed).
-  - `1`: Unrouted (no skill needed, no match, or uncertain below threshold).
-  - `2`: Operational failure (missing API key, network timeout, invalid JSON, or missing library).
+  - `0`: Route succeeded and skill identified (and installed if `-i` was passed); or `prune` pruned ephemeral skills, or `prune --dry-run` finished cleanly.
+  - `1`: Unrouted (`no_skill_needed`, `no_match`, or `uncertain` below threshold); or `prune` had no ephemeral skills to prune.
+  - `2`: Operational failure (missing API key, network timeout, invalid JSON, missing library directory, failed `tink` installation, malformed `.tink/skills.toml`, or missing `tink` binary).
 
 ---
 

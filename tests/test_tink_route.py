@@ -356,10 +356,11 @@ description: A skill without explicit name.
         self.assertEqual(result["confidence"], 0.77)
         self.assertEqual(result["probability"], 0.77)
 
+    @patch("tink_route.cli.install_skill")
     @patch("tink_route.cli.JevRouterClient.route")
     @patch("tink_route.cli.load_library_skills")
-    def test_activation_contract_in_json_output(self, mock_load, mock_route):
-        """Issue #2: JSON output must include activation contract object."""
+    def test_activation_contract_in_json_output(self, mock_load, mock_route, mock_install):
+        """Issue #2 & Critique P1.3: JSON output activation contract for install vs recommendation-only."""
         import sys
         import io
         from tink_route.cli import main
@@ -373,19 +374,241 @@ description: A skill without explicit name.
             "specialist_noul": 0.9,
             "threshold": 0.6
         }
+        mock_install.return_value = {
+            "success": True,
+            "skill_path": ".agents/skills/fake/SKILL.md",
+            "references": [],
+            "scripts": [],
+            "stdout": "Installed",
+            "stderr": "",
+            "code": 0,
+            "was_pre_existing": False,
+        }
 
-        captured_out = io.StringIO()
+        # 1. Recommendation-only: mode is install_required, entrypoint is None
+        captured_rec = io.StringIO()
         with patch.dict("os.environ", {"TYPESAFE_API_KEY": "dummy"}):
             with patch.object(sys, "argv", ["tink-route", "--json", "some task"]):
-                with patch("sys.stdout", captured_out):
+                with patch("sys.stdout", captured_rec):
                     code = main()
 
         self.assertEqual(code, 0)
-        data = json.loads(captured_out.getvalue())
-        self.assertIn("activation", data)
-        self.assertEqual(data["activation"]["mode"], "direct_read")
-        self.assertFalse(data["activation"]["restart_required"])
-        self.assertEqual(data["activation"]["entrypoint"], ".agents/skills/fake/SKILL.md")
+        rec_data = json.loads(captured_rec.getvalue())
+        self.assertIn("activation", rec_data)
+        self.assertEqual(rec_data["activation"]["mode"], "install_required")
+        self.assertIsNone(rec_data["activation"]["entrypoint"])
+
+        # 2. Installed with -i: mode is direct_read, entrypoint is populated
+        captured_inst = io.StringIO()
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "dummy"}):
+            with patch.object(sys, "argv", ["tink-route", "--json", "-i", "some task"]):
+                with patch("sys.stdout", captured_inst):
+                    code_inst = main()
+
+        self.assertEqual(code_inst, 0)
+        inst_data = json.loads(captured_inst.getvalue())
+        self.assertIn("activation", inst_data)
+        self.assertEqual(inst_data["activation"]["mode"], "direct_read")
+        self.assertEqual(inst_data["activation"]["entrypoint"], ".agents/skills/fake/SKILL.md")
+        self.assertFalse(inst_data["activation"]["restart_required"])
+
+    @patch("subprocess.run")
+    def test_pre_existing_manual_install_not_adopted(self, mock_subprocess):
+        """Critique P1.1: Re-installing a pre-existing manual skill must not adopt it into ephemeral ledger."""
+        import tempfile
+        import sys
+        from tink_route.cli import main
+        from tink_route.ephemeral import load_ephemeral_skills, prune_ephemeral_skills
+
+        mock_subprocess.return_value.returncode = 0
+        mock_subprocess.return_value.stdout = "Unchanged cro"
+        mock_subprocess.return_value.stderr = ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            skills_dir = tmppath / ".agents" / "skills" / "cro"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "SKILL.md").write_text("pre-existing manual cro")
+
+            with patch("tink_route.cli.load_library_skills", return_value=[{"name": "cro", "description": "CRO"}]), \
+                 patch("tink_route.cli.JevRouterClient.route", return_value={"status": "routed", "winner": "cro", "probability": 0.95, "confidence": 0.95, "specialist_noul": 0.9}):
+                with patch.dict("os.environ", {"TYPESAFE_API_KEY": "dummy"}), \
+                     patch("pathlib.Path.cwd", return_value=tmppath):
+                    with patch.object(sys, "argv", ["tink-route", "-i", "Optimize CRO"]):
+                        code = main()
+
+            self.assertEqual(code, 0)
+            # Ephemeral ledger must NOT adopt pre-existing cro!
+            self.assertEqual(load_ephemeral_skills(tmppath), [])
+
+            # Prune must preserve cro
+            prune_res = prune_ephemeral_skills(tmppath)
+            self.assertEqual(prune_res["pruned"], [])
+            self.assertIn("cro", prune_res["preserved"])
+
+    def test_toml_manifest_pinning_and_fail_closed(self):
+        """Critique P1.2: tomllib handles valid TOML syntax and fails closed on invalid TOML."""
+        import tempfile
+        from tink_route.ephemeral import load_pinned_skills, ManifestSyntaxError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            tink_dir = tmppath / ".tink"
+            tink_dir.mkdir()
+            manifest = tink_dir / "skills.toml"
+
+            # Quoted keys in array of tables
+            manifest.write_text('[[skills]]\n"name" = "cro"\n')
+            pinned = load_pinned_skills(tmppath)
+            self.assertIn("cro", pinned)
+
+            # Key-value table
+            manifest.write_text('[skills.landing-page]\nversion = "1.0"\n')
+            pinned = load_pinned_skills(tmppath)
+            self.assertIn("landing-page", pinned)
+
+            # Malformed TOML must raise ManifestSyntaxError (fail-closed)
+            manifest.write_text('[[skills\ninvalid toml content')
+            with self.assertRaises(ManifestSyntaxError):
+                load_pinned_skills(tmppath)
+
+    @patch("tink_route.cli.install_skill")
+    @patch("tink_route.cli.JevRouterClient.route")
+    @patch("tink_route.cli.load_library_skills")
+    def test_failed_installation_exits_2(self, mock_load, mock_route, mock_install):
+        """Critique P1.3: Failed installation exits 2 and suppresses direct_read activation."""
+        import sys
+        import io
+        from tink_route.cli import main
+
+        mock_load.return_value = [{"name": "cro", "description": "CRO"}]
+        mock_route.return_value = {
+            "status": "routed",
+            "winner": "cro",
+            "probability": 0.9,
+            "confidence": 0.9,
+            "specialist_noul": 0.9,
+            "threshold": 0.6
+        }
+        mock_install.return_value = {
+            "success": False,
+            "skill_path": None,
+            "references": [],
+            "scripts": [],
+            "stdout": "",
+            "stderr": "Library skill not found",
+            "code": 1,
+            "was_pre_existing": False,
+        }
+
+        captured = io.StringIO()
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "dummy"}):
+            with patch.object(sys, "argv", ["tink-route", "--json", "-i", "Optimize CRO"]):
+                with patch("sys.stdout", captured):
+                    code = main()
+
+        self.assertEqual(code, 2)
+        data = json.loads(captured.getvalue())
+        self.assertFalse(data.get("installed", True))
+        self.assertNotIn("activation", data)
+
+    def test_malformed_ephemeral_ledger_hygiene(self):
+        """Critique P2.1: Malformed ephemeral.json does not raise TypeError."""
+        import tempfile
+        from tink_route.ephemeral import load_ephemeral_skills, prune_ephemeral_skills
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            tink_dir = tmppath / ".tink"
+            tink_dir.mkdir()
+            ledger = tink_dir / "ephemeral.json"
+
+            # null skills list
+            ledger.write_text('{"skills": null}')
+            self.assertEqual(load_ephemeral_skills(tmppath), [])
+            # Prune should not raise
+            res = prune_ephemeral_skills(tmppath)
+            self.assertEqual(res["pruned"], [])
+
+            # unhashable elements in skills
+            ledger.write_text('{"skills": [{}]}')
+            self.assertEqual(load_ephemeral_skills(tmppath), [])
+
+    @patch("urllib.request.urlopen")
+    def test_batched_routing_preserves_no_match(self, mock_urlopen):
+        """Critique P2.2: Multi-batch where all batches return __no_match__ reports status 'no_match'."""
+        # Stage 1: Specialist needed (0.92)
+        resp_stage1 = MagicMock()
+        resp_stage1.read.return_value = json.dumps({
+            "model": "jev-1.13.0",
+            "answers": {"specialist_needed": {"type": "noul", "noul": 0.92}}
+        }).encode("utf-8")
+
+        # 25 dummy skills -> 2 batches
+        skills = [{"name": f"skill-{i}", "description": f"desc {i}"} for i in range(25)]
+
+        # Batch 1 returns __no_match__
+        resp_batch1 = MagicMock()
+        resp_batch1.read.return_value = json.dumps({
+            "model": "jev-1.13.0",
+            "answers": {
+                "selected_skill": {
+                    "type": "choice",
+                    "choice": "__no_match__",
+                    "confidence": 0.95,
+                    "probabilities": {"__no_match__": 0.95}
+                }
+            }
+        }).encode("utf-8")
+
+        # Batch 2 returns __no_match__
+        resp_batch2 = MagicMock()
+        resp_batch2.read.return_value = json.dumps({
+            "model": "jev-1.13.0",
+            "answers": {
+                "selected_skill": {
+                    "type": "choice",
+                    "choice": "__no_match__",
+                    "confidence": 0.93,
+                    "probabilities": {"__no_match__": 0.93}
+                }
+            }
+        }).encode("utf-8")
+
+        mock_urlopen.return_value.__enter__.side_effect = [resp_stage1, resp_batch1, resp_batch2]
+
+        client = JevRouterClient(api_key="test-key")
+        result = client.route(task="Some task", skills=skills, threshold=0.60)
+
+        # Must report no_match, NOT no_skill_needed!
+        self.assertEqual(result["status"], "no_match")
+        self.assertEqual(result["specialist_noul"], 0.92)
+        self.assertGreaterEqual(result["confidence"], 0.90)
+
+    def test_frontmatter_strips_quotes(self):
+        """Critique P2.3: parse_skill_metadata strips surrounding quotes from name and description."""
+        raw = """---
+name: "quoted-skill"
+description: 'quoted description'
+---
+"""
+        meta = parse_skill_metadata(raw, "fallback")
+        self.assertEqual(meta["name"], "quoted-skill")
+        self.assertEqual(meta["description"], "quoted description")
+
+    def test_prune_dry_run_exits_zero(self):
+        """Critique P2.5: prune --dry-run exits 0 even if count is 0."""
+        import tempfile
+        import sys
+        from tink_route.cli import main
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            with patch("pathlib.Path.cwd", return_value=tmppath):
+                with patch.object(sys, "argv", ["tink-route", "prune", "--dry-run"]):
+                    code = main()
+
+        self.assertEqual(code, 0)
 
 
 if __name__ == "__main__":

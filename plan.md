@@ -1,59 +1,55 @@
-# Plan: Dynamic Agent Skill Routing v0.4.0 (from `spec.md` 2026-09-21)
+# Plan: Dynamic Agent Skill Routing v0.5.0 (Audit Remediation)
 
-Addressing GitHub Issues:
-- Issue #1: Ownership-safe pruning (ledger-only by default, `--all-unpinned` opt-in).
-- Issue #2: Mid-session skill activation contract & payload.
-- Issue #3: Preserve authentic Jev confidence semantics during batched routing.
+Remediating P1 and P2 boundary defects discovered in the 2026-09-21 System Sanity & Boundary Critique:
+- **P1.1:** Prevent adoption and subsequent pruning of pre-existing manual installs (`cli.py`, `ephemeral.py`).
+- **P1.2:** Implement fail-closed standard TOML parsing with stdlib `tomllib` (`ephemeral.py`).
+- **P1.3:** Enforce exit code 2 on failed installs and suppress phantom `direct_read` activation (`cli.py`).
+- **P2.1:** Harden ledger schema validation against nulls/dicts and catch missing `tink` executable (`ephemeral.py`, `cli.py`).
+- **P2.2:** Preserve authentic `no_match` semantics and scores in multi-batch zero-survivor reduction (`client.py`).
+- **P2.3:** Strip quotes from frontmatter values (`metadata.py`).
+- **P2.4:** Normalize reference and script paths with `.as_posix()` (`cli.py`).
+- **P2.5:** Ensure `prune --dry-run` exits 0 on clean inspection (`cli.py`).
 
 ## Files that change
-- `src/tink_route/ephemeral.py`: Ledger-only pruning default; `--all-unpinned` parameter.
-- `src/tink_route/client.py`: Retain authentic Jev confidence/probability in batched single-winner and zero-winner paths.
-- `src/tink_route/cli.py`: Add `--all-unpinned` flag; populate `activation` metadata block.
-- `src/tink_route/__init__.py`: Bump `__version__ = "0.4.0"`.
-- `pyproject.toml`: Bump version to `0.4.0`.
-- `tests/test_tink_route.py`: Comprehensive tests for Issues #1, #2, #3.
-- `README.md`: Document activation contract, ledger-only prune, and `--all-unpinned`.
+- `src/tink_route/ephemeral.py`: stdlib `tomllib` parsing, fail-closed manifest validation, robust ledger schema typing (`list[str]`).
+- `src/tink_route/cli.py`: pre-existing install detection, exit 2 on install failure, activation guard, POSIX path normalization, dry-run exit 0.
+- `src/tink_route/client.py`: multi-batch zero-survivor `no_match` preservation, candidate validation.
+- `src/tink_route/metadata.py`: YAML quote stripping on frontmatter name and description.
+- `src/tink_route/__init__.py`: Bump `__version__ = "0.5.0"`.
+- `pyproject.toml`: Bump version to `0.5.0`.
+- `tests/test_tink_route.py`: Unit tests reproducing all 8 audit issues.
+- `README.md`: Document updated contracts and behaviors.
 
-## Order of work
+## Implementation Steps
 
-1. **Test-First Implementation:**
-   - Author tests in `tests/test_tink_route.py`:
-     - Test that a manually installed skill (not in `.tink/ephemeral.json`) is **preserved** by default `prune`.
-     - Test that `--all-unpinned` prunes unpinned skills while preserving `.tink/skills.toml`.
-     - Test batched Stage 2 with `> 24` skills where single winner preserves Jev-reported `0.77` confidence (not `0.85`).
-     - Test batched Stage 2 where zero winners returns `no_skill_needed` without hardcoded `0.90`.
-     - Test that `--json` output contains the `activation` contract block.
+1. **Step 1: Ephemeral Ledger & TOML Manifest Hardening (`ephemeral.py`)**
+   - Import `tomllib` (Python 3.11+ stdlib).
+   - In `load_pinned_skills(project_dir)`: parse with `tomllib.loads()`. If syntax error, raise `ValueError`.
+   - In `load_ephemeral_skills(project_dir)`: safely extract string list.
+   - In `prune_ephemeral_skills(project_dir)`: handle manifest syntax errors fail-closed.
 
-2. **Implement Ephemeral Ledger-Only Pruning (`ephemeral.py`):**
-   - Update `prune_ephemeral_skills(project_dir, dry_run=False, all_unpinned=False)`.
-   - Default: `candidates = ephemeral_tracked & installed`.
-   - If `all_unpinned`: `candidates = (ephemeral_tracked & installed) | {s for s in installed if s not in pinned}`.
-   - Preserves `manage-tink` and pinned skills.
+2. **Step 2: CLI Pre-Existing Install & Activation Guard (`cli.py`)**
+   - In `install_skill()`: check `(cwd / ".agents" / "skills" / skill_name / "SKILL.md").is_file()` *before* invoking `tink skill add`.
+   - Record in `ephemeral.json` ONLY if it was NOT pre-existing.
+   - If `res.returncode != 0`: return `success: False`.
+   - In `main()`: if `args.install` fails, exit `2` and omit `activation`.
+   - If not `args.install`: omit `activation` block.
+   - Use `.as_posix()` for relative reference/script paths.
+   - If `args.dry_run`: exit `0`.
 
-3. **Implement Authentic Batched Confidence (`client.py`):**
-   - In `route()`: when `len(skills) > BATCH_SIZE`:
-     - Store `{"name": winner, "confidence": conf, "probabilities": probs}` for each batch winner.
-     - When `len(batch_winners) == 1`: use the authentic `confidence` and `probabilities` directly from that batch.
-     - When `len(batch_winners) == 0`: use Jev-derived probability (no hardcoded `0.90`).
+3. **Step 3: Multi-Batch Reduction & Sentinel Preservation (`client.py`)**
+   - When all batches return `NO_MATCH_SENTINEL`: winner is `NO_MATCH_SENTINEL`, status is `no_match`.
+   - Preserve batch's authentic confidence/probabilities.
 
-4. **Implement Activation Contract in CLI (`cli.py`):**
-   - Add `activation` dictionary on routed install:
-     `{"mode": "direct_read", "entrypoint": skill_path, "references": references, "restart_required": False}`.
-   - Wire `--all-unpinned` into prune command.
-   - Version bump to `0.4.0`.
+4. **Step 4: Metadata Parsing Quote Stripping (`metadata.py`)**
+   - Strip leading/trailing double and single quotes from `name` and `description`.
 
-5. **Verify Locally Against Test Suite:**
-   - Run `PYTHONPATH=src python3 -m unittest discover -s tests -v`.
-   - Ensure 100% pass rate.
+5. **Step 5: Version Bump & Comprehensive Unit Tests (`tests/test_tink_route.py`)**
+   - Bump version to `0.5.0`.
+   - Add unit tests for every audited case.
+   - Verify 100% test pass rate.
 
-6. **Deploy & Close Issues (Stage 5):**
-   - Commit changes, push to GitHub `main`.
-   - Verify GitHub Actions CI run.
-   - Release `v0.4.0`.
-   - Close GitHub Issues #1, #2, #3 with references to the commits.
+6. **Step 6: Live Reproduction & Deployment**
+   - Verify on local reproductions in `/tmp/tink-route-audit`.
+   - Commit, push, CI verify, and release `v0.5.0`.
 
-## Proof
-- All unit tests pass in `tests/test_tink_route.py`.
-- No synthetic `0.85` or `0.90` strings exist in `client.py`.
-- `tink-route prune` does not touch manually installed skills.
-- GitHub Actions CI workflow passes on Python 3.11, 3.12, 3.13.
