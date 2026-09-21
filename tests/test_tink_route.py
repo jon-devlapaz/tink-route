@@ -31,10 +31,22 @@ description: A skill without explicit name.
         self.assertEqual(meta["description"], "A skill without explicit name.")
 
     def test_load_library_skills(self):
-        skills = load_library_skills(Path.home() / ".tink" / "skills")
-        self.assertGreater(len(skills), 10)
-        names = [s["name"] for s in skills]
-        self.assertIn("manage-tink", names)
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            skill_a = tmppath / "skill-a"
+            skill_a.mkdir()
+            (skill_a / "SKILL.md").write_text("---\nname: skill-a\ndescription: Skill A description\n---\n")
+
+            skill_b = tmppath / "skill-b"
+            skill_b.mkdir()
+            (skill_b / "SKILL.md").write_text("---\ndescription: Skill B description\n---\n")
+
+            skills = load_library_skills(tmppath)
+            self.assertEqual(len(skills), 2)
+            names = [s["name"] for s in skills]
+            self.assertIn("skill-a", names)
+            self.assertIn("skill-b", names)
 
     @patch("urllib.request.urlopen")
     def test_stage_1_no_skill_needed(self, mock_urlopen):
