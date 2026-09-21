@@ -1,0 +1,132 @@
+# Spec: Dynamic Agent Skill Routing (`tink-route`)
+
+Author: Claude & jondev. Status: approved.
+Reference: `intent.md` (2026-09-21)
+
+---
+
+## 1. Overview & Objectives
+
+`tink-route` is a deterministic command-line interface designed to bridge the gap between Tink's cold skill library (`~/.tink/skills/`) and the active project working set (`.agents/skills/`). It uses TypeSafe Jev (`jev-1.13.0`) to perform typed, confidence-aware routing, ensuring that:
+1. Standard coding tasks incur zero skill installations and avoid unnecessary catalog evaluations.
+2. Specialized tasks are mapped to the most load-bearing skill in the library.
+3. The agent system prompt remains free of progressive disclosure token bloat.
+
+---
+
+## 2. Functional Requirements
+
+### 2.1 CLI Interface
+- **Executable path:** `~/.local/bin/tink-route`
+- **Usage:** `tink-route "<request>" [options]`
+- **Options:**
+  - `-i`, `--install`: Automatically execute `tink skill add <winner>` upon a qualifying route decision.
+  - `--threshold <float>`: Minimum probability threshold for the Stage 1 need gate and Stage 2 selection (default: `0.55`).
+  - `--json`: Output full routing diagnostics and decision in machine-readable JSON.
+  - `--library <path>`: Directory containing skill candidate trees (default: `~/.tink/skills`).
+  - `--model <name>`: Pinned Jev model identifier (default: `jev-1.13.0`).
+  - `-h`, `--help`: Display usage information.
+
+### 2.2 Stage 1: Specialist Need Gate (Noul)
+- Before comparing any library skills, the utility constructs a Jev `noul` question evaluating whether an external skill is required.
+- **Evaluation prompt:**
+  `"Does this task strictly require a specialized domain skill, workflow, or institutional guide outside standard programming tools, reasoning, and shell utilities?"`
+- **Rule:**
+  - If $p(\text{specialist\_needed}) < \text{threshold}$ (default: `0.55`):
+    - Return `status: "no_skill_needed"`.
+    - Terminate immediately without sending candidate lists to the API.
+
+### 2.3 Stage 2: Candidate Ranking & Selection (Choice)
+- If Stage 1 passes ($p \ge \text{threshold}$):
+  - Ingest `SKILL.md` frontmatter (`name`, `description`) across all subdirectories in `~/.tink/skills/`.
+  - Construct a Jev `choice` question:
+    - `criteria`: Map of skill names to their published descriptions.
+    - `instructions`: `"Which skill is most directly load-bearing and capable of executing the requested transformation?"`
+  - If the candidate count exceeds 25, batch candidates deterministically, evaluate batches in parallel, and retain top candidates for a final reduction choice.
+- **Rule:**
+  - Top candidate must meet or exceed `threshold`.
+  - If top probability $< \text{threshold}$, return `status: "uncertain"` / `status: "review"`.
+  - Otherwise return `status: "routed"` with the selected skill.
+
+### 2.4 Mutation & Execution Hand-off
+- When `status == "routed"` and `--install` is supplied:
+  - Verify that the target project has an initialized `.agents/` or create it if missing via `tink skill add`.
+  - Execute `tink skill add <winner>`.
+  - Capture stdout/stderr and exit with status `0`.
+- When `--install` is not supplied:
+  - Output winner and probability; leave project directory untouched.
+
+---
+
+## 3. Non-Functional Requirements
+
+- **Runtime:** Python 3.11+ using standard library HTTP (`urllib.request`) and JSON parsing, requiring zero external package installations.
+- **Latency Budget:**
+  - Stage 1 alone: $\le 400\text{ ms}$.
+  - Full two-stage route: $\le 1,400\text{ ms}$.
+- **Security & Credentials:**
+  - Read `TYPESAFE_API_KEY` from process environment.
+  - Never log, echo, or serialize the key in error outputs or payloads.
+  - Do not upload file contents or project secrets; only the task description and public skill metadata are transmitted.
+- **Exit Codes:**
+  - `0`: Successful execution (`routed` or `no_skill_needed`).
+  - `1`: Unresolved or uncertain route (below threshold / review required).
+  - `2`: Operational failure (missing API key, network timeout, invalid JSON, or missing library).
+
+---
+
+## 4. Data Schemas
+
+### 4.1 TypeSafe API Payload
+```json
+{
+  "model": "jev-1.13.0",
+  "state": {
+    "task": "<user_task>",
+    "candidates": {
+      "<skill_name>": "<description>"
+    }
+  },
+  "questions": {
+    "specialist_needed": {
+      "type": "noul",
+      "instructions": "Does this task strictly require a specialized domain skill..."
+    },
+    "selected_skill": {
+      "type": "choice",
+      "instructions": "Which skill is most directly load-bearing...",
+      "criteria": {
+        "<skill_name>": "<description>"
+      }
+    }
+  }
+}
+```
+
+### 4.2 CLI JSON Output (`--json`)
+```json
+{
+  "status": "routed",
+  "task": "Build a ThreeJS particle vortex shader",
+  "winner": "threejs-shaders",
+  "probability": 0.94,
+  "confidence": 0.89,
+  "specialist_noul": 0.96,
+  "installed": true,
+  "elapsed_ms": 1120
+}
+```
+
+---
+
+## 5. Areas of Concern & Mitigations
+
+1. **Network or Provider Latency / Outages:**
+   - *Concern:* If the TypeSafe API times out or is unreachable, the agent loop could hang.
+   - *Mitigation:* Set a strict 5-second socket timeout on all HTTP requests. On timeout or 5xx, exit cleanly with code `2` and fallback advice.
+2. **Library Scalability & Batching:**
+   - *Concern:* As `~/.tink/skills/` grows past 50–100 skills, single Choice requests could exceed byte/token budgets.
+   - *Mitigation:* Batch candidates into chunks of $\le 20$ candidates per request if needed; for the current 46 skills, two parallel batches or high-signal keyword pre-filtering ensure safe byte margins (< 16 KB).
+3. **Accidental File Overwrites in `.agents/skills/`:**
+   - *Concern:* Running `tink skill add` might overwrite an existing customized skill.
+   - *Mitigation:* Delegate the actual add to `tink skill add`, which natively enforces divergence and receipt checks.
