@@ -98,12 +98,13 @@ tink-route -i "Audit e-commerce checkout flow to optimize conversion rate"
     "instruction": "Read SKILL.md directly; mid-session use does not require session restart."
   }
   ```
+- `activation.mode: "direct_read"` is emitted only when installation and ephemeral ownership tracking both succeed. If installation succeeds but ledger tracking fails, the result keeps `installed: true`, reports `tracking_error`, omits activation, and exits `2`.
 
 ### 5. Exit Code Contract
 Designed for clean scripting and deterministic agent branching:
 - **`0`**: Route succeeded (skill identified, and installed if `-i` was passed); or `prune` succeeded, or `prune --dry-run` completed cleanly.
 - **`1`**: Unrouted (`no_skill_needed`, `no_match`, or `uncertain` below threshold); or `prune` had no ephemeral skills to prune.
-- **`2`**: Operational error (missing `TYPESAFE_API_KEY`, library directory not found, failed `tink` installation, malformed `.tink/skills.toml`, or missing `tink` binary).
+- **`2`**: Operational error (missing `TYPESAFE_API_KEY`, library directory not found, failed `tink` installation, ownership ledger failure, malformed `.tink/skills.toml`, or missing `tink` binary).
 
 ```bash
 # Example shell branching:

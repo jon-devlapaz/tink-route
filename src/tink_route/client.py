@@ -2,6 +2,7 @@ import json
 import time
 import urllib.request
 import urllib.error
+import math
 from typing import Any, Dict, List
 
 DEFAULT_MODEL = "jev-1.13.0"
@@ -57,8 +58,42 @@ class JevRouterClient:
         except urllib.error.URLError as e:
             raise RuntimeError(f"Network error connecting to TypeSafe API: {e.reason}") from e
 
+    @staticmethod
+    def _parse_choice(response: Dict[str, Any], candidates: set[str]) -> Dict[str, Any]:
+        """Validate and normalize one choice response against this request's criteria."""
+        answers = response.get("answers") if isinstance(response, dict) else None
+        answer = answers.get("selected_skill") if isinstance(answers, dict) else None
+        if not isinstance(answer, dict):
+            raise RuntimeError("Invalid TypeSafe response: missing selected_skill answer")
+        winner = answer.get("choice")
+        if not isinstance(winner, str) or winner not in candidates:
+            raise RuntimeError(f"TypeSafe API selected invalid candidate '{winner}' not present in candidate criteria")
+
+        def score(value: Any, label: str) -> float:
+            try:
+                result = float(value)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(f"Invalid {label} in TypeSafe response") from exc
+            if not math.isfinite(result) or not 0.0 <= result <= 1.0:
+                raise RuntimeError(f"Invalid {label} in TypeSafe response: expected a finite value in [0, 1]")
+            return result
+
+        confidence = score(answer.get("confidence", 0.0), "confidence")
+        raw_probabilities = answer.get("probabilities", {})
+        if raw_probabilities is None:
+            raw_probabilities = {}
+        if not isinstance(raw_probabilities, dict):
+            raise RuntimeError("Invalid probabilities in TypeSafe response")
+        probabilities = {name: score(value, f"probability for '{name}'")
+                         for name, value in raw_probabilities.items()}
+        probability = probabilities.get(winner, confidence)
+        return {"winner": winner, "confidence": confidence,
+                "probabilities": probabilities, "probability": probability}
+
     def route(self, task: str, skills: List[Dict[str, str]], threshold: float = DEFAULT_THRESHOLD) -> Dict[str, Any]:
-        start_time = time.time()
+        if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+            raise ValueError("Threshold must be finite and between 0 and 1")
+        start_time = time.monotonic()
 
         # --- Stage 1: Specialist Need Gate (Noul) ---
         stage1_payload = {
@@ -73,14 +108,21 @@ class JevRouterClient:
         }
 
         stage1_resp = self._call_api(stage1_payload)
-        stage1_answers = stage1_resp.get("answers", {})
-        if not stage1_answers or "specialist_needed" not in stage1_answers:
+        stage1_answers = stage1_resp.get("answers") if isinstance(stage1_resp, dict) else None
+        if not isinstance(stage1_answers, dict) or "specialist_needed" not in stage1_answers:
             raise RuntimeError(f"Invalid API response from TypeSafe: missing specialist_needed answer: {stage1_resp}")
-        noul_answer = stage1_answers.get("specialist_needed", {})
-        specialist_noul = float(noul_answer.get("noul", 0.0))
+        noul_answer = stage1_answers["specialist_needed"]
+        if not isinstance(noul_answer, dict) or "noul" not in noul_answer:
+            raise RuntimeError("Invalid TypeSafe response: missing specialist_needed.noul")
+        try:
+            specialist_noul = float(noul_answer["noul"])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Invalid specialist_noul in TypeSafe response") from exc
+        if not math.isfinite(specialist_noul) or not 0.0 <= specialist_noul <= 1.0:
+            raise RuntimeError("Invalid specialist_noul in TypeSafe response: expected a finite value in [0, 1]")
 
         if specialist_noul < threshold:
-            elapsed = int((time.time() - start_time) * 1000)
+            elapsed = int((time.monotonic() - start_time) * 1000)
             return {
                 "status": "no_skill_needed",
                 "task": task,
@@ -90,7 +132,7 @@ class JevRouterClient:
             }
 
         if not skills:
-            elapsed = int((time.time() - start_time) * 1000)
+            elapsed = int((time.monotonic() - start_time) * 1000)
             return {
                 "status": "no_candidates_available",
                 "task": task,
@@ -121,31 +163,24 @@ class JevRouterClient:
         # Batch evaluation if needed
         if len(skills) <= BATCH_SIZE:
             resp = evaluate_batch(skills)
-            choice_ans = resp.get("answers", {}).get("selected_skill", {})
-            winner = choice_ans.get("choice")
-            if winner not in valid_candidates:
-                raise RuntimeError(f"TypeSafe API selected invalid candidate '{winner}' not present in candidate criteria")
-            conf = float(choice_ans.get("confidence", 0.0))
-            probs = choice_ans.get("probabilities", {})
-            winner_prob = float(probs.get(winner, conf))
+            parsed = self._parse_choice(resp, valid_candidates)
+            winner, conf, probs, winner_prob = (parsed[k] for k in ("winner", "confidence", "probabilities", "probability"))
         else:
             batch_winners = []
             batch_reasons = []
             for i in range(0, len(skills), BATCH_SIZE):
                 chunk = skills[i : i + BATCH_SIZE]
                 b_resp = evaluate_batch(chunk)
-                b_ans = b_resp.get("answers", {}).get("selected_skill", {})
-                b_winner = b_ans.get("choice")
-                b_conf = float(b_ans.get("confidence", 0.0))
-                b_probs = b_ans.get("probabilities", {})
-                b_prob = float(b_probs.get(b_winner, b_conf)) if b_winner else 0.0
+                batch_candidates = {s["name"] for s in chunk} | {NO_SKILL_SENTINEL, NO_MATCH_SENTINEL}
+                parsed = self._parse_choice(b_resp, batch_candidates)
+                b_winner, b_conf, b_probs, b_prob = (parsed[k] for k in ("winner", "confidence", "probabilities", "probability"))
                 batch_reasons.append({
                     "winner": b_winner,
                     "confidence": b_conf,
                     "probabilities": b_probs,
                     "probability": b_prob,
                 })
-                if b_winner and b_winner not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL):
+                if b_winner not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL):
                     matching = [s for s in chunk if s["name"] == b_winner]
                     if matching:
                         batch_winners.append({
@@ -159,13 +194,8 @@ class JevRouterClient:
             if len(batch_winners) > 1:
                 survivor_skills = [bw["skill"] for bw in batch_winners]
                 final_resp = evaluate_batch(survivor_skills)
-                choice_ans = final_resp.get("answers", {}).get("selected_skill", {})
-                winner = choice_ans.get("choice")
-                if winner not in valid_candidates:
-                    raise RuntimeError(f"TypeSafe API selected invalid candidate '{winner}' not present in candidate criteria")
-                conf = float(choice_ans.get("confidence", 0.0))
-                probs = choice_ans.get("probabilities", {})
-                winner_prob = float(probs.get(winner, conf))
+                parsed = self._parse_choice(final_resp, {s["name"] for s in survivor_skills} | {NO_SKILL_SENTINEL, NO_MATCH_SENTINEL})
+                winner, conf, probs, winner_prob = (parsed[k] for k in ("winner", "confidence", "probabilities", "probability"))
             elif batch_winners:
                 bw = batch_winners[0]
                 winner = bw["winner"]
@@ -183,12 +213,12 @@ class JevRouterClient:
                     probs = best["probabilities"] or {NO_MATCH_SENTINEL: winner_prob}
                 else:
                     best = max(batch_reasons, key=lambda br: br["probability"]) if batch_reasons else None
-                    winner = best["winner"] if best else NO_SKILL_SENTINEL
+                    winner = best["winner"] if best and best["winner"] in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL) else NO_SKILL_SENTINEL
                     conf = best["confidence"] if best else 0.0
                     winner_prob = best["probability"] if best else 0.0
                     probs = best["probabilities"] if best else {NO_SKILL_SENTINEL: 0.0}
 
-        elapsed = int((time.time() - start_time) * 1000)
+        elapsed = int((time.monotonic() - start_time) * 1000)
 
         # Extract top candidate, runner up, and margin
         valid_candidates = [

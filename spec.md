@@ -33,7 +33,7 @@ Reference: `intent.md` (2026-09-21)
 
 ### 2.2 Ephemeral Ledger, Manifest Protection & Concurrency Safety
 - **Storage & Locking:** Stored in `<project>/.tink/ephemeral.json`.
-  - All read-modify-write operations on `ephemeral.json` are synchronized using a file lock on `.tink/ephemeral.lock` (`fcntl.flock`).
+  - All ownership transactions (install/pre-existing check/record and prune discovery/removal/ledger update) are synchronized using `.tink/ephemeral.lock`. POSIX uses `fcntl`; Windows uses the platform locking API, and unsupported platforms fail explicitly.
   - Writes are executed atomically using an in-directory temporary file and `os.replace` to prevent corrupted reads or race conditions during concurrent agent invocations.
 - **Ledger Schema Hygiene & Protected I/O:**
   - `load_ephemeral_skills()` must safely handle corrupt or malformed JSON (e.g. `{"skills": null}`, `{"skills": [{}]}`). It must extract only string elements: `[s for s in skills if isinstance(s, str)]`.
@@ -75,7 +75,7 @@ Reference: `intent.md` (2026-09-21)
 - **Evaluation prompt:**
   `"Does this task strictly require a specialized domain skill, workflow, or institutional guide outside standard programming tools, reasoning, and shell utilities?"`
 - **Rule:**
-  - If $p(\text{specialist\_needed}) < \text{threshold}$ (default: `0.55`):
+  - If $p(\text{specialist\_needed}) < \text{threshold}$ (default: `0.60`):
     - Return `status: "no_skill_needed"`.
     - Terminate immediately without sending candidate lists to the API.
 

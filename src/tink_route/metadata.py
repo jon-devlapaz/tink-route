@@ -42,6 +42,7 @@ def parse_skill_metadata(content: str, fallback_name: str) -> Dict[str, str]:
 def load_library_skills(library_dir: Path) -> List[Dict[str, str]]:
     """Scan library directory and return all skills with non-empty descriptions."""
     skills = []
+    names = set()
     if not library_dir.exists() or not library_dir.is_dir():
         return skills
 
@@ -56,11 +57,16 @@ def load_library_skills(library_dir: Path) -> List[Dict[str, str]]:
             content = skill_file.read_text(encoding="utf-8", errors="ignore")
             meta = parse_skill_metadata(content, fallback_name=child.stem if child.is_file() else child.name)
             if meta.get("description"):
+                if meta["name"] in names:
+                    raise ValueError(f"Duplicate skill name in library: {meta['name']}")
+                names.add(meta["name"])
                 skills.append({
                     "name": meta["name"],
                     "description": meta["description"][:300],  # Bound description length for prompt safety
                     "path": str(skill_file.resolve()),
                 })
+        except ValueError:
+            raise
         except Exception:
             continue
 

@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 from . import __version__
 from .client import DEFAULT_MODEL, DEFAULT_THRESHOLD, JevRouterClient
-from .ephemeral import prune_ephemeral_skills, record_ephemeral_skill
+from .ephemeral import _record_ephemeral_skill_locked, ephemeral_ledger_lock, prune_ephemeral_skills
 from .metadata import load_library_skills
 
 DEFAULT_LIBRARY_PATH = Path.home() / ".tink" / "skills"
@@ -17,6 +17,12 @@ DEFAULT_LIBRARY_PATH = Path.home() / ".tink" / "skills"
 def install_skill(skill_name: str, project_dir: Optional[Path] = None) -> Dict[str, Any]:
     """Execute `tink skill add <skill_name>` and inspect installed assets."""
     cwd = project_dir or Path.cwd()
+    with ephemeral_ledger_lock(cwd):
+        return _install_skill_locked(skill_name, cwd)
+
+
+def _install_skill_locked(skill_name: str, cwd: Path) -> Dict[str, Any]:
+    """Install while the caller holds the project ownership lock."""
     skill_dir = cwd / ".agents" / "skills" / skill_name
     was_pre_existing = (skill_dir / "SKILL.md").is_file()
 
@@ -74,6 +80,19 @@ def install_skill(skill_name: str, project_dir: Optional[Path] = None) -> Dict[s
         "scripts": scripts,
         "was_pre_existing": was_pre_existing,
     }
+
+
+def _install_and_track(skill_name: str, project_dir: Path, track: bool) -> Dict[str, Any]:
+    """Install and update ownership while holding one project transaction lock."""
+    with ephemeral_ledger_lock(project_dir):
+        outcome = _install_skill_locked(skill_name, project_dir)
+        if not outcome["success"] or not track or outcome.get("was_pre_existing"):
+            return outcome
+        try:
+            _record_ephemeral_skill_locked(project_dir, skill_name)
+        except Exception as exc:
+            outcome["tracking_error"] = f"Failed to record ephemeral ledger: {exc}"
+        return outcome
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -193,7 +212,15 @@ def main() -> int:
             print(f"Error: {err['error']}", file=sys.stderr)
         return 2
 
-    skills = load_library_skills(args.library)
+    try:
+        skills = load_library_skills(args.library)
+    except Exception as e:
+        err = {"error": f"Unable to load skill library: {e}"}
+        if args.json:
+            print(json.dumps(err))
+        else:
+            print(f"Error: {err['error']}", file=sys.stderr)
+        return 2
     if not skills:
         err = {"error": f"No skills found in library directory: {args.library}"}
         if args.json:
@@ -216,24 +243,30 @@ def main() -> int:
     # Handle installation if requested and routed
     install_failed = False
     if result["status"] == "routed" and args.install:
-        install_res = install_skill(result["winner"])
+        project_dir = Path.cwd()
+        try:
+            install_res = _install_and_track(result["winner"], project_dir, args.ephemeral)
+        except Exception as e:
+            install_res = {
+                "success": False,
+                "stdout": "",
+                "stderr": str(e),
+                "code": 2,
+                "skill_path": None,
+                "references": [],
+                "scripts": [],
+                "was_pre_existing": False,
+            }
         result["installed"] = install_res["success"]
         result["skill_path"] = install_res.get("skill_path")
         result["references"] = install_res.get("references", [])
         result["scripts"] = install_res.get("scripts", [])
         result["install_output"] = install_res["stdout"] or install_res["stderr"]
         if install_res["success"]:
-            ledger_ok = True
-            if args.ephemeral and not install_res.get("was_pre_existing"):
-                try:
-                    record_ephemeral_skill(Path.cwd(), result["winner"])
-                except Exception as e:
-                    ledger_ok = False
-                    install_failed = True
-                    result["installed"] = False
-                    result["install_error"] = f"Failed to record ephemeral ledger: {e}"
-
-            if ledger_ok:
+            if install_res.get("tracking_error"):
+                install_failed = True
+                result["tracking_error"] = install_res["tracking_error"]
+            else:
                 result["activation"] = {
                     "mode": "direct_read",
                     "entrypoint": result.get("skill_path"),
@@ -267,13 +300,15 @@ def main() -> int:
             p = result["probability"]
             conf = result["confidence"]
             print(f"Recommended Skill: {winner} (p={p:.2f}, conf={conf:.2f}, noul={result['specialist_noul']:.2f})")
-            if result.get("installed"):
+            if result.get("installed") and not result.get("tracking_error"):
                 print(f"Installed: {result.get('skill_path')}")
                 refs = result.get("references", [])
                 print(f"References: {', '.join(refs) if refs else '(none)'}")
                 if result.get("scripts"):
                     print(f"Scripts: {', '.join(result['scripts'])}")
                 print("Activation: Ready for immediate direct reading (no restart required).")
+            elif args.install and result.get("tracking_error"):
+                print(f"Installation succeeded but ownership tracking failed: {result['tracking_error']}", file=sys.stderr)
             elif args.install and not result.get("installed"):
                 print(f"Installation failed: {result.get('install_error', '')}", file=sys.stderr)
             else:

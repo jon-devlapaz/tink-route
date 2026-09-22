@@ -356,7 +356,7 @@ description: A skill without explicit name.
         self.assertEqual(result["confidence"], 0.77)
         self.assertEqual(result["probability"], 0.77)
 
-    @patch("tink_route.cli.install_skill")
+    @patch("tink_route.cli._install_skill_locked")
     @patch("tink_route.cli.JevRouterClient.route")
     @patch("tink_route.cli.load_library_skills")
     def test_activation_contract_in_json_output(self, mock_load, mock_route, mock_install):
@@ -472,7 +472,7 @@ description: A skill without explicit name.
             with self.assertRaises(ManifestSyntaxError):
                 load_pinned_skills(tmppath)
 
-    @patch("tink_route.cli.install_skill")
+    @patch("tink_route.cli._install_skill_locked")
     @patch("tink_route.cli.JevRouterClient.route")
     @patch("tink_route.cli.load_library_skills")
     def test_failed_installation_exits_2(self, mock_load, mock_route, mock_install):
@@ -653,8 +653,8 @@ description: 'quoted description'
 
         self.assertEqual(code, 2)
 
-    @patch("tink_route.cli.record_ephemeral_skill")
-    @patch("tink_route.cli.install_skill")
+    @patch("tink_route.cli._record_ephemeral_skill_locked")
+    @patch("tink_route.cli._install_skill_locked")
     @patch("tink_route.cli.JevRouterClient.route")
     @patch("tink_route.cli.load_library_skills")
     def test_ledger_write_failure_handled_cleanly(self, mock_load, mock_route, mock_install, mock_record):
@@ -692,8 +692,8 @@ description: 'quoted description'
 
         self.assertEqual(code, 2)
         data = json.loads(captured.getvalue())
-        self.assertFalse(data.get("installed"))
-        self.assertIn("Failed to record ephemeral ledger", data.get("install_error", ""))
+        self.assertTrue(data.get("installed"))
+        self.assertIn("Failed to record ephemeral ledger", data.get("tracking_error", ""))
         self.assertNotIn("activation", data)
 
     @patch("urllib.request.urlopen")
