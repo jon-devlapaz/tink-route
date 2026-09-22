@@ -1,8 +1,15 @@
+import contextlib
 import json
+import os
 import subprocess
 import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Set
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 RESERVED_SKILLS = {"manage-tink"}
 
@@ -16,6 +23,24 @@ def get_tink_dir(project_dir: Path) -> Path:
     tink_dir = project_dir / ".tink"
     tink_dir.mkdir(parents=True, exist_ok=True)
     return tink_dir
+
+
+@contextlib.contextmanager
+def ephemeral_ledger_lock(project_dir: Path):
+    """File lock around ephemeral.json to prevent race conditions during concurrent operations."""
+    tink_dir = get_tink_dir(project_dir)
+    lock_file = tink_dir / "ephemeral.lock"
+    fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        if fcntl:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if fcntl:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def load_ephemeral_skills(project_dir: Path) -> List[str]:
@@ -37,11 +62,14 @@ def load_ephemeral_skills(project_dir: Path) -> List[str]:
 def record_ephemeral_skill(project_dir: Path, skill_name: str) -> None:
     tink_dir = get_tink_dir(project_dir)
     ledger_file = tink_dir / "ephemeral.json"
-    skills = load_ephemeral_skills(project_dir)
-    if skill_name not in skills:
-        skills.append(skill_name)
-    data = {"version": 1, "skills": skills}
-    ledger_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    with ephemeral_ledger_lock(project_dir):
+        skills = load_ephemeral_skills(project_dir)
+        if skill_name not in skills:
+            skills.append(skill_name)
+        data = {"version": 1, "skills": skills}
+        temp_file = tink_dir / f"ephemeral.json.tmp.{os.getpid()}"
+        temp_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        os.replace(temp_file, ledger_file)
 
 
 def load_pinned_skills(project_dir: Path) -> Set[str]:
@@ -128,13 +156,17 @@ def prune_ephemeral_skills(project_dir: Path, dry_run: bool = False, all_unpinne
         except FileNotFoundError:
             errors.append({"skill": skill, "error": "tink executable not found in PATH"})
 
-    # Update ephemeral ledger
-    remaining_ephemeral = [s for s in ephemeral_tracked if s not in pruned_successfully]
-    ledger_file = project_dir / ".tink" / "ephemeral.json"
-    if remaining_ephemeral:
-        ledger_file.write_text(json.dumps({"version": 1, "skills": remaining_ephemeral}, indent=2) + "\n", encoding="utf-8")
-    elif ledger_file.is_file():
-        ledger_file.unlink(missing_ok=True)
+    # Update ephemeral ledger under lock
+    with ephemeral_ledger_lock(project_dir):
+        current_ephemeral = set(load_ephemeral_skills(project_dir))
+        remaining_ephemeral = [s for s in current_ephemeral if s not in pruned_successfully]
+        ledger_file = project_dir / ".tink" / "ephemeral.json"
+        if remaining_ephemeral:
+            temp_file = project_dir / ".tink" / f"ephemeral.json.tmp.{os.getpid()}"
+            temp_file.write_text(json.dumps({"version": 1, "skills": remaining_ephemeral}, indent=2) + "\n", encoding="utf-8")
+            os.replace(temp_file, ledger_file)
+        elif ledger_file.is_file():
+            ledger_file.unlink(missing_ok=True)
 
     return {
         "pruned": pruned_successfully,

@@ -176,7 +176,7 @@ def main() -> int:
                         print(f"Error removing {err['skill']}: {err['error']}", file=sys.stderr)
         if args.dry_run:
             return 0
-        if res.get("errors") and res["count"] == 0:
+        if res.get("errors"):
             return 2
         return 0 if res["count"] > 0 else 1
 
@@ -223,16 +223,25 @@ def main() -> int:
         result["scripts"] = install_res.get("scripts", [])
         result["install_output"] = install_res["stdout"] or install_res["stderr"]
         if install_res["success"]:
+            ledger_ok = True
             if args.ephemeral and not install_res.get("was_pre_existing"):
-                record_ephemeral_skill(Path.cwd(), result["winner"])
-            result["activation"] = {
-                "mode": "direct_read",
-                "entrypoint": result.get("skill_path"),
-                "references": result.get("references", []),
-                "scripts": result.get("scripts", []),
-                "restart_required": False,
-                "instruction": "Read SKILL.md directly; mid-session use does not require session restart.",
-            }
+                try:
+                    record_ephemeral_skill(Path.cwd(), result["winner"])
+                except Exception as e:
+                    ledger_ok = False
+                    install_failed = True
+                    result["installed"] = False
+                    result["install_error"] = f"Failed to record ephemeral ledger: {e}"
+
+            if ledger_ok:
+                result["activation"] = {
+                    "mode": "direct_read",
+                    "entrypoint": result.get("skill_path"),
+                    "references": result.get("references", []),
+                    "scripts": result.get("scripts", []),
+                    "restart_required": False,
+                    "instruction": "Read SKILL.md directly; mid-session use does not require session restart.",
+                }
         else:
             install_failed = True
             result["install_error"] = install_res["stderr"] or "Installation failed"

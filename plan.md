@@ -1,23 +1,18 @@
-# Plan: Dynamic Agent Skill Routing v0.5.0 (Audit Remediation)
+# Plan: Dynamic Agent Skill Routing v0.5.1 (Concurrency & Validation Hardening)
 
-Remediating P1 and P2 boundary defects discovered in the 2026-09-21 System Sanity & Boundary Critique:
-- **P1.1:** Prevent adoption and subsequent pruning of pre-existing manual installs (`cli.py`, `ephemeral.py`).
-- **P1.2:** Implement fail-closed standard TOML parsing with stdlib `tomllib` (`ephemeral.py`).
-- **P1.3:** Enforce exit code 2 on failed installs and suppress phantom `direct_read` activation (`cli.py`).
-- **P2.1:** Harden ledger schema validation against nulls/dicts and catch missing `tink` executable (`ephemeral.py`, `cli.py`).
-- **P2.2:** Preserve authentic `no_match` semantics and scores in multi-batch zero-survivor reduction (`client.py`).
-- **P2.3:** Strip quotes from frontmatter values (`metadata.py`).
-- **P2.4:** Normalize reference and script paths with `.as_posix()` (`cli.py`).
-- **P2.5:** Ensure `prune --dry-run` exits 0 on clean inspection (`cli.py`).
+Remediating boundary defects from the secondary audit:
+- **1. Concurrent Ledger Writes:** Add `fcntl.flock` on `.tink/ephemeral.lock` and atomic file write (`os.replace`) in `ephemeral.py`.
+- **2. Partial Prune Error Exit:** Return exit `2` whenever `res.get("errors")` is non-empty in `cli.py`.
+- **3. Protected Ledger Writes:** Catch `Exception` in `record_ephemeral_skill` in `cli.py`, reporting clean error and exit `2`.
+- **4. API Candidate Validation:** Strictly validate `winner` in `client.py` against candidate set and safe identifier syntax (rejecting `../outside` with `RuntimeError`).
 
 ## Files that change
-- `src/tink_route/ephemeral.py`: stdlib `tomllib` parsing, fail-closed manifest validation, robust ledger schema typing (`list[str]`).
-- `src/tink_route/cli.py`: pre-existing install detection, exit 2 on install failure, activation guard, POSIX path normalization, dry-run exit 0.
-- `src/tink_route/client.py`: multi-batch zero-survivor `no_match` preservation, candidate validation.
-- `src/tink_route/metadata.py`: YAML quote stripping on frontmatter name and description.
-- `src/tink_route/__init__.py`: Bump `__version__ = "0.5.0"`.
-- `pyproject.toml`: Bump version to `0.5.0`.
-- `tests/test_tink_route.py`: Unit tests reproducing all 8 audit issues.
+- `src/tink_route/ephemeral.py`: Ledger file locking and atomic temporary file rename.
+- `src/tink_route/cli.py`: Partial prune exit 2 check, protected `record_ephemeral_skill` error handling.
+- `src/tink_route/client.py`: Candidate membership validation and path traversal rejection.
+- `src/tink_route/__init__.py`: Bump `__version__ = "0.5.1"`.
+- `pyproject.toml`: Bump version to `0.5.1`.
+- `tests/test_tink_route.py`: Unit tests reproducing all 4 edge cases.
 - `README.md`: Document updated contracts and behaviors.
 
 ## Implementation Steps

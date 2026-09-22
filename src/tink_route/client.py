@@ -116,11 +116,15 @@ class JevRouterClient:
             }
             return self._call_api(stage2_payload)
 
+        valid_candidates = {s["name"] for s in skills} | {NO_SKILL_SENTINEL, NO_MATCH_SENTINEL}
+
         # Batch evaluation if needed
         if len(skills) <= BATCH_SIZE:
             resp = evaluate_batch(skills)
             choice_ans = resp.get("answers", {}).get("selected_skill", {})
             winner = choice_ans.get("choice")
+            if winner not in valid_candidates:
+                raise RuntimeError(f"TypeSafe API selected invalid candidate '{winner}' not present in candidate criteria")
             conf = float(choice_ans.get("confidence", 0.0))
             probs = choice_ans.get("probabilities", {})
             winner_prob = float(probs.get(winner, conf))
@@ -157,6 +161,8 @@ class JevRouterClient:
                 final_resp = evaluate_batch(survivor_skills)
                 choice_ans = final_resp.get("answers", {}).get("selected_skill", {})
                 winner = choice_ans.get("choice")
+                if winner not in valid_candidates:
+                    raise RuntimeError(f"TypeSafe API selected invalid candidate '{winner}' not present in candidate criteria")
                 conf = float(choice_ans.get("confidence", 0.0))
                 probs = choice_ans.get("probabilities", {})
                 winner_prob = float(probs.get(winner, conf))

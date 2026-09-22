@@ -31,16 +31,13 @@ Reference: `intent.md` (2026-09-21)
   - `-v`, `--version`: Output installed version.
   - `-h`, `--help`: Display usage information.
 
-### 2.2 Ephemeral Ledger, Manifest Protection & Ownership Safety
-- **Storage:** Stored in `<project>/.tink/ephemeral.json`:
-  ```json
-  {
-    "version": 1,
-    "skills": ["threejs-shaders"]
-  }
-  ```
-- **Ledger Schema Hygiene:**
+### 2.2 Ephemeral Ledger, Manifest Protection & Concurrency Safety
+- **Storage & Locking:** Stored in `<project>/.tink/ephemeral.json`.
+  - All read-modify-write operations on `ephemeral.json` are synchronized using a file lock on `.tink/ephemeral.lock` (`fcntl.flock`).
+  - Writes are executed atomically using an in-directory temporary file and `os.replace` to prevent corrupted reads or race conditions during concurrent agent invocations.
+- **Ledger Schema Hygiene & Protected I/O:**
   - `load_ephemeral_skills()` must safely handle corrupt or malformed JSON (e.g. `{"skills": null}`, `{"skills": [{}]}`). It must extract only string elements: `[s for s in skills if isinstance(s, str)]`.
+  - `record_ephemeral_skill()` must be wrapped in error handlers in `cli.py`. If disk/permission errors occur during ledger writing, the error is caught and reported cleanly with operational exit code `2`.
 - **Fail-Closed Manifest Pinning (`load_pinned_skills`):**
   - Uses Python 3.11 stdlib `tomllib.loads()` to parse `.tink/skills.toml`.
   - Supports standard TOML patterns:
@@ -62,13 +59,16 @@ Reference: `intent.md` (2026-09-21)
      - **Invariants:** Never prune `manage-tink`. Never prune skills declared in `.tink/skills.toml`.
   4. If `--dry-run`:
      - Print eligible skills and exit `0` (even if count is 0).
-  5. For each qualifying skill:
+  5. For each qualifying skill (under lock):
      - Invoke `tink skill remove <name>`.
      - Remove skill from `.tink/ephemeral.json`.
   6. Output count and list of removed skills:
      `Pruned 1 ephemeral skill(s): threejs-shaders`
      `Clean state confirmed in .agents/skills/.`
-  7. Exit code: `0` if pruning succeeded or `--dry-run` ran cleanly. Exit `1` if normal prune had no ephemeral skills to prune. Exit `2` if an operational error occurred (e.g. malformed manifest or missing `tink`).
+  7. Exit code contract for prune:
+     - `0`: Pruning succeeded with zero errors (or `--dry-run` ran cleanly).
+     - `1`: No ephemeral skills to prune.
+     - `2`: Any error occurred (manifest syntax error, missing `tink`, or partial prune removal failure).
 
 ### 2.2 Stage 1: Specialist Need Gate (Noul)
 - Before comparing any library skills, the utility constructs a Jev `noul` question evaluating whether an external skill is required.
@@ -95,6 +95,9 @@ Reference: `intent.md` (2026-09-21)
       - If zero batch winners survive:
         - If batches returned `__no_match__`, set `winner = __no_match__`, preserve the batch's confidence/probability, and classify status as `no_match` (preserving authentic Stage 1 `specialist_noul`).
         - Only if batches explicitly chose `__no_skill__` should status become `no_skill_needed`.
+- **Candidate Sanitization & Validation Invariant:**
+  - Jev API's returned `choice` must strictly belong to the evaluated candidate criteria: `valid_skills = {s["name"] for s in skills} | {__no_skill__, __no_match__}`.
+  - Candidate names returned by the API that are unlisted, or that contain path traversal characters (`..`, `/`, `\`), are rejected immediately with `RuntimeError` and mapped to operational exit code `2`.
 - **Rule:**
   - Top candidate must meet or exceed `threshold`.
   - If top candidate is `__no_match__`: return `status: "no_match"`.

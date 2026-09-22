@@ -610,6 +610,127 @@ description: 'quoted description'
 
         self.assertEqual(code, 0)
 
+    def test_concurrent_ledger_writes_no_loss(self):
+        """Audit Finding 1: Concurrent writes to ephemeral.json must not lose records."""
+        import tempfile
+        import threading
+        from tink_route.ephemeral import load_ephemeral_skills, record_ephemeral_skill
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            num_threads = 12
+            barrier = threading.Barrier(num_threads)
+
+            def worker(idx):
+                barrier.wait()
+                record_ephemeral_skill(tmppath, f"skill-{idx}")
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            recorded = set(load_ephemeral_skills(tmppath))
+            expected = {f"skill-{i}" for i in range(num_threads)}
+            self.assertEqual(recorded, expected)
+
+    @patch("tink_route.cli.prune_ephemeral_skills")
+    def test_partial_prune_failure_returns_exit_2(self, mock_prune):
+        """Audit Finding 2: Partial prune failures must return exit code 2."""
+        import sys
+        from tink_route.cli import main
+
+        mock_prune.return_value = {
+            "pruned": ["success-skill"],
+            "preserved": [],
+            "errors": [{"skill": "failing-skill", "error": "removal failed"}],
+            "dry_run": False,
+            "count": 1,
+        }
+        with patch.object(sys, "argv", ["tink-route", "prune"]):
+            code = main()
+
+        self.assertEqual(code, 2)
+
+    @patch("tink_route.cli.record_ephemeral_skill")
+    @patch("tink_route.cli.install_skill")
+    @patch("tink_route.cli.JevRouterClient.route")
+    @patch("tink_route.cli.load_library_skills")
+    def test_ledger_write_failure_handled_cleanly(self, mock_load, mock_route, mock_install, mock_record):
+        """Audit Finding 3: Ledger write failures must not escape as unhandled exceptions."""
+        import sys
+        import io
+        from tink_route.cli import main
+
+        mock_load.return_value = [{"name": "cro", "description": "CRO"}]
+        mock_route.return_value = {
+            "status": "routed",
+            "winner": "cro",
+            "probability": 0.95,
+            "confidence": 0.95,
+            "specialist_noul": 0.9,
+            "threshold": 0.6
+        }
+        mock_install.return_value = {
+            "success": True,
+            "skill_path": ".agents/skills/cro/SKILL.md",
+            "references": [],
+            "scripts": [],
+            "stdout": "Installed",
+            "stderr": "",
+            "code": 0,
+            "was_pre_existing": False,
+        }
+        mock_record.side_effect = PermissionError("Read-only filesystem")
+
+        captured = io.StringIO()
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "dummy"}):
+            with patch.object(sys, "argv", ["tink-route", "--json", "-i", "Optimize CRO"]):
+                with patch("sys.stdout", captured):
+                    code = main()
+
+        self.assertEqual(code, 2)
+        data = json.loads(captured.getvalue())
+        self.assertFalse(data.get("installed"))
+        self.assertIn("Failed to record ephemeral ledger", data.get("install_error", ""))
+        self.assertNotIn("activation", data)
+
+    @patch("urllib.request.urlopen")
+    def test_unknown_and_path_traversal_api_choice_rejected(self, mock_urlopen):
+        """Audit Finding 4: Unknown or path-traversal candidate from API must be rejected."""
+        resp_stage1 = MagicMock()
+        resp_stage1.read.return_value = json.dumps({
+            "model": "jev-1.13.0",
+            "answers": {"specialist_needed": {"type": "noul", "noul": 0.90}}
+        }).encode("utf-8")
+
+        # API tries to return ../outside
+        resp_stage2 = MagicMock()
+        resp_stage2.read.return_value = json.dumps({
+            "model": "jev-1.13.0",
+            "answers": {
+                "selected_skill": {
+                    "type": "choice",
+                    "choice": "../outside",
+                    "confidence": 0.99,
+                    "probabilities": {"../outside": 0.99}
+                }
+            }
+        }).encode("utf-8")
+
+        mock_urlopen.return_value.__enter__.side_effect = [resp_stage1, resp_stage2]
+
+        client = JevRouterClient(api_key="test-key")
+        with self.assertRaises(RuntimeError) as ctx:
+            client.route(
+                task="Malicious task",
+                skills=[{"name": "valid-skill", "description": "Valid skill"}],
+                threshold=0.60
+            )
+
+        self.assertIn("invalid candidate", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
