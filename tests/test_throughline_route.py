@@ -8,20 +8,14 @@ from tink_route.client import JevRouterClient
 from tink_route.metadata import load_library_skills
 
 HOME_SKILLS = Path.home() / ".tink" / "skills"
-THROUGHLINE_SKILLS = Path("/Users/jondev/dev/active/tink-skills-throughline/skills")
 SKILL_NAMES = ("interrogate", "skill-scout", "ai-native-sdlc")
 
 
 def skill_source(name: str) -> Path:
-    home = HOME_SKILLS / name / "SKILL.md"
-    if home.is_file():
-        return home
-    alternate = THROUGHLINE_SKILLS / name / "SKILL.md"
-    if alternate.is_file():
-        return alternate
-    raise FileNotFoundError(
-        f"No SKILL.md for {name} in {HOME_SKILLS} or {THROUGHLINE_SKILLS}"
-    )
+    path = HOME_SKILLS / name / "SKILL.md"
+    if path.is_file():
+        return path
+    raise FileNotFoundError(f"No SKILL.md for {name} in {HOME_SKILLS}")
 
 
 def stage_that_failed(expected: str, result: dict) -> str:
