@@ -38,6 +38,9 @@ class TestThroughlineRouteEval(unittest.TestCase):
         api_key = os.environ.get("TYPESAFE_API_KEY", "")
         if not api_key:
             raise unittest.SkipTest("TYPESAFE_API_KEY is not set")
+        missing = [n for n in SKILL_NAMES if not (HOME_SKILLS / n / "SKILL.md").is_file()]
+        if missing:
+            raise unittest.SkipTest(f"missing home-library skills: {missing}")
         cls._sandbox = tempfile.TemporaryDirectory()
         library = Path(cls._sandbox.name)
         for name in SKILL_NAMES:
