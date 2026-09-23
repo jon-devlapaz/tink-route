@@ -36,3 +36,5 @@ venv.bak/
 .vscode/
 *.swp
 .tink/
+.coverage
+.coverage.*

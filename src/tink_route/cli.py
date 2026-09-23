@@ -1,97 +1,60 @@
+"""Command line interface for tink-route."""
+
 import argparse
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from . import __version__
+from .adapters.executor import DefaultSubprocessExecutor
+from .adapters.ledger import FilesystemLedger
 from .client import DEFAULT_MODEL, DEFAULT_THRESHOLD, JevRouterClient
-from .ephemeral import _record_ephemeral_skill_locked, ephemeral_ledger_lock, prune_ephemeral_skills
+from .core.constants import FITS_THRESHOLD, MULTI_DEFAULT_TOP_K
+from .core.engine import RoutingEngine
+from .core.models import InstallOutcome
+from .ephemeral import (
+    _record_ephemeral_skill_locked,
+    ephemeral_ledger_lock,
+    prune_ephemeral_skills,
+)
 from .metadata import load_library_skills
 
 DEFAULT_LIBRARY_PATH = Path.home() / ".tink" / "skills"
+_DEFAULT_EXECUTOR = DefaultSubprocessExecutor()
+_DEFAULT_LEDGER = FilesystemLedger()
+_DEFAULT_ENGINE = RoutingEngine(executor=_DEFAULT_EXECUTOR, ledger=_DEFAULT_LEDGER)
 
 
-def install_skill(skill_name: str, project_dir: Optional[Path] = None) -> Dict[str, Any]:
-    """Execute `tink skill add <skill_name>` and inspect installed assets."""
+def install_skill(skill_name: str, project_dir: Optional[Path] = None) -> InstallOutcome:
+    """Execute `tink skill add -- <skill_name>` and inspect installed assets."""
     cwd = project_dir or Path.cwd()
     with ephemeral_ledger_lock(cwd):
         return _install_skill_locked(skill_name, cwd)
 
 
-def _install_skill_locked(skill_name: str, cwd: Path) -> Dict[str, Any]:
-    """Install while the caller holds the project ownership lock."""
-    skill_dir = cwd / ".agents" / "skills" / skill_name
-    was_pre_existing = (skill_dir / "SKILL.md").is_file()
-
-    try:
-        res = subprocess.run(
-            ["tink", "skill", "add", skill_name],
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        success = (res.returncode == 0)
-        stdout = res.stdout.strip()
-        stderr = res.stderr.strip()
-        code = res.returncode
-    except FileNotFoundError:
-        return {
-            "success": False,
-            "stdout": "",
-            "stderr": "tink executable not found in PATH",
-            "code": 2,
-            "skill_path": None,
-            "references": [],
-            "scripts": [],
-            "was_pre_existing": was_pre_existing,
-        }
-
-    skill_rel_path = f".agents/skills/{skill_name}/SKILL.md"
-
-    references = []
-    scripts = []
-    if success and skill_dir.is_dir():
-        ref_dir = skill_dir / "references"
-        if ref_dir.is_dir():
-            references = [
-                p.relative_to(skill_dir).as_posix()
-                for p in sorted(ref_dir.iterdir())
-                if p.is_file() and not p.name.startswith(".")
-            ]
-        scr_dir = skill_dir / "scripts"
-        if scr_dir.is_dir():
-            scripts = [
-                p.relative_to(skill_dir).as_posix()
-                for p in sorted(scr_dir.iterdir())
-                if p.is_file() and not p.name.startswith(".")
-            ]
-
-    return {
-        "success": success,
-        "stdout": stdout,
-        "stderr": stderr,
-        "code": code,
-        "skill_path": skill_rel_path if success else None,
-        "references": references,
-        "scripts": scripts,
-        "was_pre_existing": was_pre_existing,
-    }
+def _install_skill_locked(skill_name: str, cwd: Path) -> InstallOutcome:
+    """Install while holding project lock, validating path containment."""
+    return _DEFAULT_ENGINE.install_skill_locked(skill_name, cwd)
 
 
-def _install_and_track(skill_name: str, project_dir: Path, track: bool) -> Dict[str, Any]:
+def _install_and_track(skill_name: str, project_dir: Path, track: bool) -> Any:
     """Install and update ownership while holding one project transaction lock."""
     with ephemeral_ledger_lock(project_dir):
         outcome = _install_skill_locked(skill_name, project_dir)
-        if not outcome["success"] or not track or outcome.get("was_pre_existing"):
+        is_success = outcome.success if hasattr(outcome, "success") else bool(outcome.get("success", False))
+        is_pre_existing = outcome.was_pre_existing if hasattr(outcome, "was_pre_existing") else bool(outcome.get("was_pre_existing", False))
+        if not is_success or not track or is_pre_existing:
             return outcome
         try:
             _record_ephemeral_skill_locked(project_dir, skill_name)
         except Exception as exc:
-            outcome["tracking_error"] = f"Failed to record ephemeral ledger: {exc}"
+            msg = f"Failed to record ephemeral ledger: {exc}"
+            if hasattr(outcome, "tracking_error"):
+                outcome.tracking_error = msg
+            else:
+                outcome["tracking_error"] = msg
         return outcome
 
 
@@ -157,6 +120,36 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MODEL,
         help=f"Pinned TypeSafe Jev model identifier (default: {DEFAULT_MODEL}).",
     )
+    parser.add_argument(
+        "--tri-gate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use three orthogonal Stage 1 noul questions instead of a single specialist gate (default: true).",
+    )
+    parser.add_argument(
+        "--rerank",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Rerank the top Stage 2 candidates using SKILL.md excerpts and fits nouls (default: true).",
+    )
+    parser.add_argument(
+        "--fits-threshold",
+        type=float,
+        default=FITS_THRESHOLD,
+        help=f"Minimum per-skill fits noul required to accept a reranked winner (default: {FITS_THRESHOLD}).",
+    )
+    parser.add_argument(
+        "--multi",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Return a ranked list of qualifying skills instead of a single winner.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=MULTI_DEFAULT_TOP_K,
+        help=f"Maximum skills to return with --multi (default: {MULTI_DEFAULT_TOP_K}).",
+    )
     return parser
 
 
@@ -176,8 +169,9 @@ def main() -> int:
                 print(f"Prune error: {e}", file=sys.stderr)
             return 2
 
+        output_res = res.to_dict() if hasattr(res, "to_dict") else dict(res)
         if args.json:
-            print(json.dumps(res, indent=2))
+            print(json.dumps(output_res, indent=2))
         else:
             if res.get("dry_run"):
                 if res["pruned"]:
@@ -191,8 +185,8 @@ def main() -> int:
                 else:
                     print("No ephemeral skills to prune.")
                 if res.get("errors"):
-                    for err in res["errors"]:
-                        print(f"Error removing {err['skill']}: {err['error']}", file=sys.stderr)
+                    for err_item in res["errors"]:
+                        print(f"Error removing {err_item['skill']}: {err_item['error']}", file=sys.stderr)
         if args.dry_run:
             return 0
         if res.get("errors"):
@@ -230,8 +224,26 @@ def main() -> int:
         return 2
 
     client = JevRouterClient(api_key=api_key, model=args.model)
+    engine = RoutingEngine(
+        client=client,
+        executor=_DEFAULT_EXECUTOR,
+        ledger=_DEFAULT_LEDGER,
+        install_handler=_install_and_track,
+    )
     try:
-        result = client.route(args.task, skills, threshold=args.threshold)
+        result = engine.route(
+            task=args.task,
+            library=skills,
+            threshold=args.threshold,
+            install=args.install,
+            ephemeral=args.ephemeral,
+            project_dir=Path.cwd(),
+            tri_gate=args.tri_gate,
+            rerank=args.rerank,
+            fits_threshold=args.fits_threshold,
+            multi=args.multi,
+            top_k=args.top_k,
+        )
     except Exception as e:
         err = {"error": str(e)}
         if args.json:
@@ -240,61 +252,33 @@ def main() -> int:
             print(f"Routing failure: {e}", file=sys.stderr)
         return 2
 
-    # Handle installation if requested and routed
     install_failed = False
-    if result["status"] == "routed" and args.install:
-        project_dir = Path.cwd()
-        try:
-            install_res = _install_and_track(result["winner"], project_dir, args.ephemeral)
-        except Exception as e:
-            install_res = {
-                "success": False,
-                "stdout": "",
-                "stderr": str(e),
-                "code": 2,
-                "skill_path": None,
-                "references": [],
-                "scripts": [],
-                "was_pre_existing": False,
-            }
-        result["installed"] = install_res["success"]
-        result["skill_path"] = install_res.get("skill_path")
-        result["references"] = install_res.get("references", [])
-        result["scripts"] = install_res.get("scripts", [])
-        result["install_output"] = install_res["stdout"] or install_res["stderr"]
-        if install_res["success"]:
-            if install_res.get("tracking_error"):
-                install_failed = True
-                result["tracking_error"] = install_res["tracking_error"]
-            else:
-                result["activation"] = {
-                    "mode": "direct_read",
-                    "entrypoint": result.get("skill_path"),
-                    "references": result.get("references", []),
-                    "scripts": result.get("scripts", []),
-                    "restart_required": False,
-                    "instruction": "Read SKILL.md directly; mid-session use does not require session restart.",
-                }
-        else:
+    if result["status"] in ("routed", "multi_routed") and args.install:
+        if not result.get("installed") or result.get("tracking_error"):
             install_failed = True
-            result["install_error"] = install_res["stderr"] or "Installation failed"
-    elif result["status"] == "routed" and not args.install:
-        result["activation"] = {
-            "mode": "install_required",
-            "entrypoint": None,
-            "references": [],
-            "scripts": [],
-            "restart_required": False,
-            "instruction": f"Run 'tink skill add {result['winner']}' to install before reading.",
-        }
 
+    output_data = result.to_dict() if hasattr(result, "to_dict") else dict(result)
     if args.json:
-        print(json.dumps(result, indent=2))
+        print(json.dumps(output_data, indent=2))
     else:
         status = result["status"]
         if status in ("no_skill_needed", "no_match"):
             print(f"Status: {status} (specialist_noul: {result['specialist_noul']:.2f}).")
             print("Standard coding tools and models are sufficient.")
+        elif status == "multi_routed":
+            cands = result.get("candidates", [])
+            print(f"Recommended Skills ({len(cands)}):")
+            for idx, cand in enumerate(cands, start=1):
+                print(f"  {idx}. {cand['skill']} (p={cand['probability']:.2f})")
+            if result.get("installed") and not result.get("tracking_error"):
+                print(f"Installed winner: {result.get('skill_path')}")
+                print("Activation: Ready for immediate direct reading (no restart required).")
+            elif args.install and result.get("tracking_error"):
+                print(f"Installation succeeded but ownership tracking failed: {result['tracking_error']}", file=sys.stderr)
+            elif args.install and not result.get("installed"):
+                print(f"Installation failed: {result.get('install_error', '')}", file=sys.stderr)
+            else:
+                print(f"To install winners run: tink skill add {result['winner']}")
         elif status == "routed":
             winner = result["winner"]
             p = result["probability"]
@@ -330,7 +314,7 @@ def main() -> int:
     # 2 = error (installation failed, API error, missing key/library)
     if install_failed:
         return 2
-    return 0 if result["status"] == "routed" else 1
+    return 0 if result["status"] in ("routed", "multi_routed") else 1
 
 
 if __name__ == "__main__":
