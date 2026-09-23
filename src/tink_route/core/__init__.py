@@ -10,7 +10,7 @@ from .exceptions import (
     SkillValidationError,
     TinkRouteError,
 )
-from .models import InstallOutcome, PruneReport, RoutingResult, SkillMetadata
+from .models import InstallOutcome, PruneReport, RoutingResult
 from .validation import is_valid_skill_name, validate_skill_dir_containment
 
 __all__ = [
@@ -24,7 +24,6 @@ __all__ = [
     "RoutingResult",
     "PruneReport",
     "InstallOutcome",
-    "SkillMetadata",
     "is_valid_skill_name",
     "validate_skill_dir_containment",
     "RoutingEngine",

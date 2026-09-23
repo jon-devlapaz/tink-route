@@ -58,7 +58,7 @@ class TestSecurityValidationAndMetadata(unittest.TestCase):
         self.assertEqual(meta["description"], "Handled with BOM")
 
     def test_meta_2_yaml_chomping_and_paragraphs(self) -> None:
-        """META-2: Support YAML block scalars >-, >+, |-, |+ and preserve paragraphs across blank lines."""
+        """META-2: Folded and literal YAML blocks preserve paragraphs and strip the trailing break."""
         # Folded chomped (>-) with two paragraphs separated by blank line
         yaml_folded = """---
 name: folded-skill

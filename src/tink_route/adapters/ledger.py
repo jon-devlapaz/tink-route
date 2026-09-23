@@ -10,41 +10,23 @@ import tomllib
 from pathlib import Path
 from typing import Any, Iterator
 
+from ..core.constants import RESERVED_SKILLS
 from ..core.exceptions import LockError, ManifestSyntaxError
 from ..core.models import PruneReport
 from .executor import DefaultSubprocessExecutor, SubprocessExecutor
 
-RESERVED_SKILLS = {"manage-tink"}
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None  # type: ignore[assignment]
 
 _REGISTRY_LOCK = threading.Lock()
 _PROJECT_LOCKS: dict[Path, tuple[threading.RLock, int, int | None]] = {}
-
-
-def _get_lock_backends() -> tuple[Any, Any]:
-    """Retrieve fcntl / msvcrt modules, supporting dynamic monkey-patching in tests."""
-    f_backend: Any = None
-    m_backend: Any = None
-    ephem = sys.modules.get("tink_route.ephemeral")
-
-    if ephem is not None and hasattr(ephem, "fcntl"):
-        f_backend = ephem.fcntl
-    else:
-        try:
-            import fcntl
-            f_backend = fcntl
-        except ImportError:
-            f_backend = None
-
-    if ephem is not None and hasattr(ephem, "msvcrt"):
-        m_backend = ephem.msvcrt
-    else:
-        try:
-            import msvcrt
-            m_backend = msvcrt
-        except ImportError:
-            m_backend = None
-
-    return f_backend, m_backend
 
 
 class FilesystemLedger:
@@ -82,12 +64,11 @@ class FilesystemLedger:
                     tink_dir = self.get_tink_dir(proj)
                     lock_file = tink_dir / "ephemeral.lock"
                     new_fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o644)
-                    f_backend, m_backend = _get_lock_backends()
                     try:
-                        if f_backend is not None:
-                            f_backend.flock(new_fd, f_backend.LOCK_EX)
-                        elif m_backend is not None:
-                            m_backend.locking(new_fd, m_backend.LK_LOCK, 1)
+                        if fcntl is not None:
+                            fcntl.flock(new_fd, fcntl.LOCK_EX)
+                        elif msvcrt is not None:
+                            msvcrt.locking(new_fd, msvcrt.LK_LOCK, 1)
                         else:
                             raise LockError("No supported file-locking mechanism on this platform")
                     except BaseException:
@@ -105,14 +86,13 @@ class FilesystemLedger:
                     if proj in _PROJECT_LOCKS:
                         lock_obj, depth, current_fd = _PROJECT_LOCKS[proj]
                         if depth <= 1:
-                            f_backend, m_backend = _get_lock_backends()
                             try:
                                 if current_fd is not None:
-                                    if f_backend is not None:
-                                        f_backend.flock(current_fd, f_backend.LOCK_UN)
-                                    elif m_backend is not None:
+                                    if fcntl is not None:
+                                        fcntl.flock(current_fd, fcntl.LOCK_UN)
+                                    elif msvcrt is not None:
                                         os.lseek(current_fd, 0, os.SEEK_SET)
-                                        m_backend.locking(current_fd, m_backend.LK_UNLCK, 1)
+                                        msvcrt.locking(current_fd, msvcrt.LK_UNLCK, 1)
                             finally:
                                 if current_fd is not None:
                                     try:
@@ -221,6 +201,11 @@ class FilesystemLedger:
         all_unpinned: bool = False,
         executor: SubprocessExecutor | None = None,
     ) -> PruneReport:
+        if all_unpinned and not self._has_ownership_record(project_dir):
+            print(
+                "Warning: no .tink ledger or manifest found; --all-unpinned treats every installed skill as unpinned.",
+                file=sys.stderr,
+            )
         if dry_run:
             return self._prune_locked(
                 project_dir, dry_run=True, all_unpinned=all_unpinned, executor=executor
@@ -229,6 +214,9 @@ class FilesystemLedger:
             return self._prune_locked(
                 project_dir, dry_run=False, all_unpinned=all_unpinned, executor=executor
             )
+
+    def _has_ownership_record(self, project_dir: Path) -> bool:
+        return bool(self.load_ephemeral_skills(project_dir)) or bool(self.load_pinned_skills(project_dir))
 
     def _prune_locked(
         self,
@@ -297,3 +285,6 @@ class FilesystemLedger:
             dry_run=False,
             count=len(pruned_successfully),
         )
+
+
+default_ledger = FilesystemLedger()

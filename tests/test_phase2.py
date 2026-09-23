@@ -27,7 +27,7 @@ class TestTriNoulGate(unittest.TestCase):
             res = self.client.route(
                 "Explain how GLSL vertex shaders calculate lighting",
                 [{"name": "threejs-shaders", "description": "Write GLSL shaders"}],
-                tri_gate=True,
+                tri_gate=True, rerank=False,
             )
         self.assertEqual(res.status, "no_skill_needed")
         self.assertAlmostEqual(res.specialist_noul or 0.0, 0.067, places=3)
@@ -39,7 +39,7 @@ class TestTriNoulGate(unittest.TestCase):
     def test_tri_gate_missing_answers_are_protocol_errors(self) -> None:
         with patch.object(self.client, "_call_api", return_value={"answers": {"acts_on_user_system": {"noul": 0.9}}}):
             with self.assertRaises(ApiProtocolError):
-                self.client.route("Build shaders", [{"name": "threejs-shaders", "description": "GLSL"}], tri_gate=True)
+                self.client.route("Build shaders", [{"name": "threejs-shaders", "description": "GLSL"}], tri_gate=True, rerank=False)
 
 
 class TestShortlistRerank(unittest.TestCase):
@@ -86,7 +86,7 @@ class TestShortlistRerank(unittest.TestCase):
             res = self.client.route(
                 "Author a new investor pitch deck from scratch",
                 self.skills,
-                rerank=True,
+                rerank=True, tri_gate=False,
             )
         self.assertEqual(res.status, "routed")
         self.assertEqual(res.winner, "pptx-author")
@@ -114,14 +114,14 @@ class TestShortlistRerank(unittest.TestCase):
             res = self.client.route(
                 "Post this announcement to Mastodon",
                 self.skills,
-                rerank=True,
+                rerank=True, tri_gate=False,
             )
         self.assertEqual(res.status, "no_match")
         self.assertIsNone(res.winner)
 
     def test_rerank_off_does_not_make_a_third_call(self) -> None:
         with patch.object(self.client, "_call_api", side_effect=[self.noul, self.stage2]) as api:
-            res = self.client.route("Author a pitch deck", self.skills, rerank=False)
+            res = self.client.route("Author a pitch deck", self.skills, rerank=False, tri_gate=False)
         self.assertEqual(res.status, "routed")
         self.assertEqual(res.winner, "powerpoint")
         self.assertEqual(api.call_count, 2)
@@ -139,7 +139,7 @@ class TestShortlistRerank(unittest.TestCase):
         }
         with patch.object(self.client, "_call_api", side_effect=[self.noul, self.stage2, rerank]):
             with self.assertRaises(ApiProtocolError):
-                self.client.route("Author a pitch deck", self.skills, rerank=True)
+                self.client.route("Author a pitch deck", self.skills, rerank=True, tri_gate=False)
 
 
 class TestMetadataBodyExcerpt(unittest.TestCase):

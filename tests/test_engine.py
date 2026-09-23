@@ -33,32 +33,32 @@ class TestRoutingEngine(unittest.TestCase):
         )
 
     def test_engine_route_no_skill_needed(self) -> None:
-        self.client.route.return_value = {
-            "status": "no_skill_needed",
-            "task": "simple task",
-            "specialist_noul": 0.1,
-            "threshold": 0.6,
-            "elapsed_ms": 50,
-        }
+        self.client.route.return_value = RoutingResult(
+            status="no_skill_needed",
+            task="simple task",
+            specialist_noul=0.1,
+            threshold=0.6,
+            elapsed_ms=50,
+        )
         res = self.engine.route("simple task", [{"name": "s1", "description": "desc"}])
         self.assertEqual(res.status, "no_skill_needed")
         self.assertFalse(res.installed)
         self.assertIsNone(res.activation)
 
     def test_engine_route_routed_without_install(self) -> None:
-        self.client.route.return_value = {
-            "status": "routed",
-            "task": "render 3d",
-            "winner": "threejs-shaders",
-            "probability": 0.95,
-            "runner_up": None,
-            "runner_up_probability": 0.0,
-            "margin": 0.95,
-            "confidence": 0.95,
-            "specialist_noul": 0.9,
-            "threshold": 0.6,
-            "elapsed_ms": 120,
-        }
+        self.client.route.return_value = RoutingResult(
+            status="routed",
+            task="render 3d",
+            winner="threejs-shaders",
+            probability=0.95,
+            runner_up=None,
+            runner_up_probability=0.0,
+            margin=0.95,
+            confidence=0.95,
+            specialist_noul=0.9,
+            threshold=0.6,
+            elapsed_ms=120,
+        )
         res = self.engine.route("render 3d", [{"name": "threejs-shaders", "description": "desc"}], install=False)
         self.assertEqual(res.status, "routed")
         self.assertEqual(res.winner, "threejs-shaders")
@@ -68,16 +68,16 @@ class TestRoutingEngine(unittest.TestCase):
         self.assertEqual(res.activation["mode"], "install_required")
 
     def test_engine_route_routed_with_install_success(self) -> None:
-        self.client.route.return_value = {
-            "status": "routed",
-            "task": "render 3d",
-            "winner": "threejs-shaders",
-            "probability": 0.95,
-            "confidence": 0.95,
-            "specialist_noul": 0.9,
-            "threshold": 0.6,
-            "elapsed_ms": 120,
-        }
+        self.client.route.return_value = RoutingResult(
+            status="routed",
+            task="render 3d",
+            winner="threejs-shaders",
+            probability=0.95,
+            confidence=0.95,
+            specialist_noul=0.9,
+            threshold=0.6,
+            elapsed_ms=120,
+        )
         self.ledger.lock.return_value.__enter__.return_value = None
         self.ledger.record_ephemeral_skill_locked.return_value = None
 

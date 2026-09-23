@@ -5,57 +5,30 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from . import __version__
 from .adapters.executor import DefaultSubprocessExecutor
-from .adapters.ledger import FilesystemLedger
+from .adapters.ledger import default_ledger
 from .client import DEFAULT_MODEL, DEFAULT_THRESHOLD, JevRouterClient
 from .core.constants import FITS_THRESHOLD, MULTI_DEFAULT_TOP_K
 from .core.engine import RoutingEngine
-from .core.models import InstallOutcome
-from .ephemeral import (
-    _record_ephemeral_skill_locked,
-    ephemeral_ledger_lock,
-    prune_ephemeral_skills,
-)
+from .core.models import InstallOutcome, RoutingResult
 from .metadata import load_library_skills
 
 DEFAULT_LIBRARY_PATH = Path.home() / ".tink" / "skills"
 _DEFAULT_EXECUTOR = DefaultSubprocessExecutor()
-_DEFAULT_LEDGER = FilesystemLedger()
-_DEFAULT_ENGINE = RoutingEngine(executor=_DEFAULT_EXECUTOR, ledger=_DEFAULT_LEDGER)
+_DEFAULT_ENGINE = RoutingEngine(executor=_DEFAULT_EXECUTOR, ledger=default_ledger)
 
 
 def install_skill(skill_name: str, project_dir: Optional[Path] = None) -> InstallOutcome:
     """Execute `tink skill add -- <skill_name>` and inspect installed assets."""
-    cwd = project_dir or Path.cwd()
-    with ephemeral_ledger_lock(cwd):
-        return _install_skill_locked(skill_name, cwd)
+    return _DEFAULT_ENGINE.install_skill(skill_name, project_dir)
 
 
 def _install_skill_locked(skill_name: str, cwd: Path) -> InstallOutcome:
-    """Install while holding project lock, validating path containment."""
+    """Install one skill. The caller is responsible for the ledger lock."""
     return _DEFAULT_ENGINE.install_skill_locked(skill_name, cwd)
-
-
-def _install_and_track(skill_name: str, project_dir: Path, track: bool) -> Any:
-    """Install and update ownership while holding one project transaction lock."""
-    with ephemeral_ledger_lock(project_dir):
-        outcome = _install_skill_locked(skill_name, project_dir)
-        is_success = outcome.success if hasattr(outcome, "success") else bool(outcome.get("success", False))
-        is_pre_existing = outcome.was_pre_existing if hasattr(outcome, "was_pre_existing") else bool(outcome.get("was_pre_existing", False))
-        if not is_success or not track or is_pre_existing:
-            return outcome
-        try:
-            _record_ephemeral_skill_locked(project_dir, skill_name)
-        except Exception as exc:
-            msg = f"Failed to record ephemeral ledger: {exc}"
-            if hasattr(outcome, "tracking_error"):
-                outcome.tracking_error = msg
-            else:
-                outcome["tracking_error"] = msg
-        return outcome
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -153,6 +126,70 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_install_followup(result: RoutingResult, installing: bool) -> None:
+    if result.installed and not result.tracking_error:
+        return
+    if installing and result.tracking_error:
+        print(
+            f"Installation succeeded but ownership tracking failed: {result.tracking_error}",
+            file=sys.stderr,
+        )
+    elif installing and not result.installed:
+        print(f"Installation failed: {result.install_error or ''}", file=sys.stderr)
+    elif result.winner:
+        print(f"To install run: tink skill add {result.winner}")
+
+
+def _print_route(result: RoutingResult, *, installing: bool) -> None:
+    status = result.status
+    noul = result.specialist_noul or 0.0
+    if status in ("no_skill_needed", "no_match"):
+        print(f"Status: {status} (specialist_noul: {noul:.2f}).")
+        print("Standard coding tools and models are sufficient.")
+    elif status == "no_candidates_available":
+        print(f"Status: {status} (specialist_noul: {noul:.2f}).")
+        print("No candidate skills available in the library.")
+    elif status == "multi_routed":
+        cands = result.candidates or []
+        print(f"Recommended Skills ({len(cands)}):")
+        for idx, cand in enumerate(cands, start=1):
+            print(f"  {idx}. {cand['skill']} (p={cand['probability']:.2f})")
+        if result.installed and not result.tracking_error:
+            print(f"Installed winner: {result.skill_path}")
+            print("Activation: Ready for immediate direct reading (no restart required).")
+        else:
+            _print_install_followup(result, installing)
+    elif status == "routed":
+        print(
+            f"Recommended Skill: {result.winner} "
+            f"(p={result.probability:.2f}, conf={result.confidence:.2f}, noul={noul:.2f})"
+        )
+        if result.installed and not result.tracking_error:
+            print(f"Installed: {result.skill_path}")
+            refs = result.references
+            print(f"References: {', '.join(refs) if refs else '(none)'}")
+            if result.scripts:
+                print(f"Scripts: {', '.join(result.scripts)}")
+            print("Activation: Ready for immediate direct reading (no restart required).")
+        else:
+            _print_install_followup(result, installing)
+    else:
+        top = result.top_candidate
+        p = result.probability or 0.0
+        threshold = result.threshold or 0.0
+        if result.runner_up:
+            rup_p = result.runner_up_probability or 0.0
+            margin = result.margin or 0.0
+            print(
+                f"Status: uncertain. Top candidate '{top}' (p={p:.2f}) fell below threshold {threshold:.2f}. "
+                f"Runner-up: '{result.runner_up}' (p={rup_p:.2f}, margin={margin:.2f})."
+            )
+        else:
+            print(
+                f"Status: uncertain. Top candidate '{top}' (p={p:.2f}) fell below threshold {threshold:.2f}."
+            )
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -160,7 +197,7 @@ def main() -> int:
     # Handle prune command (either `tink-route prune` or `tink-route --prune`)
     if args.task == "prune" or args.prune:
         try:
-            res = prune_ephemeral_skills(Path.cwd(), dry_run=args.dry_run, all_unpinned=args.all_unpinned)
+            res = _DEFAULT_ENGINE.prune(Path.cwd(), dry_run=args.dry_run, all_unpinned=args.all_unpinned)
         except Exception as e:
             err = {"error": str(e)}
             if args.json:
@@ -169,29 +206,27 @@ def main() -> int:
                 print(f"Prune error: {e}", file=sys.stderr)
             return 2
 
-        output_res = res.to_dict() if hasattr(res, "to_dict") else dict(res)
         if args.json:
-            print(json.dumps(output_res, indent=2))
+            print(json.dumps(res.to_dict(), indent=2))
         else:
-            if res.get("dry_run"):
-                if res["pruned"]:
-                    print(f"Eligible for pruning ({res['count']}): {', '.join(res['pruned'])}")
+            if res.dry_run:
+                if res.pruned:
+                    print(f"Eligible for pruning ({res.count}): {', '.join(res.pruned)}")
                 else:
                     print("No transient skills eligible for pruning.")
             else:
-                if res["pruned"]:
-                    print(f"Pruned {res['count']} ephemeral skill(s): {', '.join(res['pruned'])}")
+                if res.pruned:
+                    print(f"Pruned {res.count} ephemeral skill(s): {', '.join(res.pruned)}")
                     print("Clean state confirmed in .agents/skills/.")
                 else:
                     print("No ephemeral skills to prune.")
-                if res.get("errors"):
-                    for err_item in res["errors"]:
-                        print(f"Error removing {err_item['skill']}: {err_item['error']}", file=sys.stderr)
+                for err_item in res.errors:
+                    print(f"Error removing {err_item['skill']}: {err_item['error']}", file=sys.stderr)
         if args.dry_run:
             return 0
-        if res.get("errors"):
+        if res.errors:
             return 2
-        return 0 if res["count"] > 0 else 1
+        return 0
 
     if not args.task:
         parser.print_help()
@@ -206,6 +241,13 @@ def main() -> int:
             print(f"Error: {err['error']}", file=sys.stderr)
         return 2
 
+    if not args.library.is_dir():
+        err = {"error": f"Skill library not found or not a directory: {args.library}"}
+        if args.json:
+            print(json.dumps(err))
+        else:
+            print(f"Error: {err['error']}", file=sys.stderr)
+        return 2
     try:
         skills = load_library_skills(args.library)
     except Exception as e:
@@ -227,13 +269,12 @@ def main() -> int:
     engine = RoutingEngine(
         client=client,
         executor=_DEFAULT_EXECUTOR,
-        ledger=_DEFAULT_LEDGER,
-        install_handler=_install_and_track,
+        ledger=default_ledger,
     )
     try:
         result = engine.route(
             task=args.task,
-            library=skills,
+            skills=skills,
             threshold=args.threshold,
             install=args.install,
             ephemeral=args.ephemeral,
@@ -252,61 +293,16 @@ def main() -> int:
             print(f"Routing failure: {e}", file=sys.stderr)
         return 2
 
-    install_failed = False
-    if result["status"] in ("routed", "multi_routed") and args.install:
-        if not result.get("installed") or result.get("tracking_error"):
-            install_failed = True
+    install_failed = (
+        result.status in ("routed", "multi_routed")
+        and args.install
+        and (not result.installed or result.tracking_error)
+    )
 
-    output_data = result.to_dict() if hasattr(result, "to_dict") else dict(result)
     if args.json:
-        print(json.dumps(output_data, indent=2))
+        print(json.dumps(result.to_dict(), indent=2))
     else:
-        status = result["status"]
-        if status in ("no_skill_needed", "no_match"):
-            print(f"Status: {status} (specialist_noul: {result['specialist_noul']:.2f}).")
-            print("Standard coding tools and models are sufficient.")
-        elif status == "multi_routed":
-            cands = result.get("candidates", [])
-            print(f"Recommended Skills ({len(cands)}):")
-            for idx, cand in enumerate(cands, start=1):
-                print(f"  {idx}. {cand['skill']} (p={cand['probability']:.2f})")
-            if result.get("installed") and not result.get("tracking_error"):
-                print(f"Installed winner: {result.get('skill_path')}")
-                print("Activation: Ready for immediate direct reading (no restart required).")
-            elif args.install and result.get("tracking_error"):
-                print(f"Installation succeeded but ownership tracking failed: {result['tracking_error']}", file=sys.stderr)
-            elif args.install and not result.get("installed"):
-                print(f"Installation failed: {result.get('install_error', '')}", file=sys.stderr)
-            else:
-                print(f"To install winners run: tink skill add {result['winner']}")
-        elif status == "routed":
-            winner = result["winner"]
-            p = result["probability"]
-            conf = result["confidence"]
-            print(f"Recommended Skill: {winner} (p={p:.2f}, conf={conf:.2f}, noul={result['specialist_noul']:.2f})")
-            if result.get("installed") and not result.get("tracking_error"):
-                print(f"Installed: {result.get('skill_path')}")
-                refs = result.get("references", [])
-                print(f"References: {', '.join(refs) if refs else '(none)'}")
-                if result.get("scripts"):
-                    print(f"Scripts: {', '.join(result['scripts'])}")
-                print("Activation: Ready for immediate direct reading (no restart required).")
-            elif args.install and result.get("tracking_error"):
-                print(f"Installation succeeded but ownership tracking failed: {result['tracking_error']}", file=sys.stderr)
-            elif args.install and not result.get("installed"):
-                print(f"Installation failed: {result.get('install_error', '')}", file=sys.stderr)
-            else:
-                print(f"To install run: tink skill add {winner}")
-        else:
-            top = result.get("top_candidate")
-            p = result.get("probability", 0.0)
-            runner_up = result.get("runner_up")
-            rup_p = result.get("runner_up_probability", 0.0)
-            margin = result.get("margin", 0.0)
-            if runner_up:
-                print(f"Status: uncertain. Top candidate '{top}' (p={p:.2f}) fell below threshold {result['threshold']:.2f}. Runner-up: '{runner_up}' (p={rup_p:.2f}, margin={margin:.2f}).")
-            else:
-                print(f"Status: uncertain. Top candidate '{top}' (p={p:.2f}) fell below threshold {result['threshold']:.2f}.")
+        _print_route(result, installing=args.install)
 
     # Semantic exit code contract:
     # 0 = routed successfully (and installed if -i was passed)
@@ -314,7 +310,7 @@ def main() -> int:
     # 2 = error (installation failed, API error, missing key/library)
     if install_failed:
         return 2
-    return 0 if result["status"] in ("routed", "multi_routed") else 1
+    return 0 if result.status in ("routed", "multi_routed") else 1
 
 
 if __name__ == "__main__":

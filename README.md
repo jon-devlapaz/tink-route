@@ -12,9 +12,12 @@ The [Agent Skills standard](https://agentskills.io) injects every installed skil
 - With 40+ skills, this burns **2,500–5,000+ tokens on every single turn**, even for a one-line typo fix.
 - Models suffer attention dilution, confusion between overlapping skill descriptions, and false-positive tool calls.
 
-`tink-route` replaces progressive disclosure with a **two-stage semantic gate**:
-1. **Stage 1 (Noul Gate):** *"Is a specialist skill strictly required for this task?"* If $p < 0.60$, exits in under 300 ms with `no_skill_needed`.
-2. **Stage 2 (Choice Ranking):** Only if Stage 1 passes, Jev evaluates library candidates and selects the single most load-bearing skill.
+`tink-route` replaces progressive disclosure with a **three-stage semantic gate** (all on by default; disable with `--no-tri-gate` / `--no-rerank`):
+1. **Stage 1 (Tri-Noul Gate):** three orthogonal questions — does the task act on the user's system, would it follow a documented procedure, could prose alone suffice — averaged into one specialist score. If below threshold, exits in under 300 ms with `no_skill_needed`.
+2. **Stage 2 (Choice Ranking):** Only if Stage 1 passes, Jev evaluates library candidates (batched, tournament-reduced past 24 skills) and selects the single most load-bearing skill.
+3. **Stage 3 (Shortlist Rerank):** The top 3 candidates are re-read with `SKILL.md` body excerpts plus per-skill `fits` nouls, correcting lookalike winners; if no candidate fits, the result becomes `no_match`.
+
+Pass `--multi` to return a ranked `candidates` list (`--top-k N`, default 3) instead of a single winner — every qualifying skill at or above threshold, drawn from all evaluated batches.
 
 ---
 
@@ -102,8 +105,8 @@ tink-route -i "Audit e-commerce checkout flow to optimize conversion rate"
 
 ### 5. Exit Code Contract
 Designed for clean scripting and deterministic agent branching:
-- **`0`**: Route succeeded (skill identified, and installed if `-i` was passed); or `prune` succeeded, or `prune --dry-run` completed cleanly.
-- **`1`**: Unrouted (`no_skill_needed`, `no_match`, or `uncertain` below threshold); or `prune` had no ephemeral skills to prune.
+- **`0`**: Route succeeded (skill identified, and installed if `-i` was passed); or `prune` completed (including nothing to prune), or `prune --dry-run` completed cleanly.
+- **`1`**: Unrouted (`no_skill_needed`, `no_match`, `no_candidates_available`, or `uncertain` below threshold).
 - **`2`**: Operational error (missing `TYPESAFE_API_KEY`, library directory not found, failed `tink` installation, ownership ledger failure, malformed `.tink/skills.toml`, or missing `tink` binary).
 
 ```bash
@@ -134,7 +137,7 @@ tink-route prune
 
 - **Ownership Safety:** Only skills installed and recorded by `tink-route -i` are pruned by default. If a skill was already installed manually prior to routing, it is **never adopted** into `.tink/ephemeral.json` and will not be pruned.
 - **Fail-Closed Manifest Protection:** Skills declared in `.tink/skills.toml` (parsed with standard `tomllib`) and reserved skills (`manage-tink`) are **strictly protected** and never pruned in any mode. If `.tink/skills.toml` has invalid syntax, pruning fails closed with exit code `2`.
-- **Broad Sweep (`--all-unpinned`):** To sweep all unpinned skills in `.agents/skills/`, pass `tink-route prune --all-unpinned`.
+- **Broad Sweep (`--all-unpinned`):** To sweep all unpinned skills in `.agents/skills/`, pass `tink-route prune --all-unpinned`. Warning: with no `.tink` ledger or manifest present, every installed skill looks unpinned — the CLI prints a stderr warning in that case.
 - **Pass `--no-ephemeral`:** To install a permanent skill without ephemeral tracking: `tink-route -i --no-ephemeral "<task>"`.
 
 ### 7. JSON Output (`--json`)
@@ -165,8 +168,9 @@ tink-route --json "Audit this codebase architecture"
                            │
                            ▼
 [ Semantic Router ]   tink-route "<task>" [-i]
-                        ├── Stage 1: Jev Noul Gate (p >= 0.60)
-                        └── Stage 2: Jev Choice Ranking
+                        ├── Stage 1: Tri-Noul Gate (p >= 0.60)
+                        ├── Stage 2: Jev Choice Ranking
+                        └── Stage 3: Shortlist Rerank (fits nouls) [--multi: ranked candidates]
                            │
                            ▼ (calls `tink skill add <winner>`)
 [ Active Working Set] .agents/skills/ (0–2 skills active at a time)

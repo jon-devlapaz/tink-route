@@ -34,7 +34,7 @@ class TestConcurrencyAndLedger(unittest.TestCase):
             mock_fcntl.LOCK_EX = 2
             mock_fcntl.LOCK_UN = 8
 
-            with patch("tink_route.adapters.ledger._get_lock_backends", return_value=(mock_fcntl, None)):
+            with patch("tink_route.adapters.ledger.fcntl", mock_fcntl), patch("tink_route.adapters.ledger.msvcrt", None):
                 # Outer lock (depth 0 -> 1)
                 with self.ledger.lock(tmppath):
                     self.assertEqual(len(lock_calls), 1)
@@ -82,7 +82,7 @@ class TestConcurrencyAndLedger(unittest.TestCase):
 
             mock_fcntl.flock.side_effect = fake_flock
 
-            with patch("tink_route.adapters.ledger._get_lock_backends", return_value=(mock_fcntl, None)):
+            with patch("tink_route.adapters.ledger.fcntl", mock_fcntl), patch("tink_route.adapters.ledger.msvcrt", None):
                 proj_key = tmppath.resolve()
                 with self.ledger.lock(tmppath):
                     # Inside lock: OS lock acquired while holding thread lock

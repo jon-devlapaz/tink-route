@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from tink_route.client import JevRouterClient
 from tink_route.cli import install_skill
+from tink_route.core.models import InstallOutcome, PruneReport, RoutingResult
 from tink_route.metadata import load_library_skills, parse_skill_metadata
 
 
@@ -64,10 +65,10 @@ description: A skill without explicit name.
             task="Fix typo in variable name",
             skills=[{"name": "code-review", "description": "Reviews code"}],
             threshold=0.60
-        )
+        , tri_gate=False, rerank=False)
 
-        self.assertEqual(result["status"], "no_skill_needed")
-        self.assertLess(result["specialist_noul"], 0.60)
+        self.assertEqual(result.status, "no_skill_needed")
+        self.assertLess(result.specialist_noul, 0.60)
         self.assertEqual(mock_urlopen.call_count, 1)
 
     @patch("urllib.request.urlopen")
@@ -103,11 +104,11 @@ description: A skill without explicit name.
                 {"name": "code-review", "description": "Reviews code"}
             ],
             threshold=0.60
-        )
+        , tri_gate=False, rerank=False)
 
-        self.assertEqual(result["status"], "routed")
-        self.assertEqual(result["winner"], "threejs-shaders")
-        self.assertGreaterEqual(result["probability"], 0.60)
+        self.assertEqual(result.status, "routed")
+        self.assertEqual(result.winner, "threejs-shaders")
+        self.assertGreaterEqual(result.probability, 0.60)
         self.assertEqual(mock_urlopen.call_count, 2)
 
     @patch("subprocess.run")
@@ -129,10 +130,10 @@ description: A skill without explicit name.
             (cro_dir / "scripts" / "audit.sh").write_text("#!/bin/sh")
 
             outcome = install_skill("cro", project_dir=tmppath)
-            self.assertTrue(outcome["success"])
-            self.assertEqual(outcome["skill_path"], ".agents/skills/cro/SKILL.md")
-            self.assertEqual(outcome["references"], ["references/experiments.md", "references/form.md"])
-            self.assertEqual(outcome["scripts"], ["scripts/audit.sh"])
+            self.assertTrue(outcome.success)
+            self.assertEqual(outcome.skill_path, ".agents/skills/cro/SKILL.md")
+            self.assertEqual(outcome.references, ["references/experiments.md", "references/form.md"])
+            self.assertEqual(outcome.scripts, ["scripts/audit.sh"])
 
     @patch("urllib.request.urlopen")
     def test_stage_2_uncertain_extracts_runner_up(self, mock_urlopen):
@@ -167,14 +168,14 @@ description: A skill without explicit name.
                 {"name": "landing-page", "description": "Landing page design"}
             ],
             threshold=0.60
-        )
+        , tri_gate=False, rerank=False)
 
-        self.assertEqual(result["status"], "uncertain")
-        self.assertEqual(result["top_candidate"], "cro")
-        self.assertEqual(result["probability"], 0.55)
-        self.assertEqual(result["runner_up"], "landing-page")
-        self.assertEqual(result["runner_up_probability"], 0.40)
-        self.assertEqual(result["margin"], 0.15)
+        self.assertEqual(result.status, "uncertain")
+        self.assertEqual(result.top_candidate, "cro")
+        self.assertEqual(result.probability, 0.55)
+        self.assertEqual(result.runner_up, "landing-page")
+        self.assertEqual(result.runner_up_probability, 0.40)
+        self.assertEqual(result.margin, 0.15)
 
     @patch("tink_route.cli.JevRouterClient.route")
     @patch("tink_route.cli.load_library_skills")
@@ -186,17 +187,17 @@ description: A skill without explicit name.
 
         with patch.dict("os.environ", {"TYPESAFE_API_KEY": "dummy"}):
             # 1. Routed -> exit 0
-            mock_route.return_value = {"status": "routed", "winner": "fake", "probability": 0.9, "confidence": 0.9, "specialist_noul": 0.9}
+            mock_route.return_value = RoutingResult(status="routed", task="some task", winner="fake", probability=0.9, confidence=0.9, specialist_noul=0.9)
             with patch.object(sys, "argv", ["tink-route", "some task"]):
                 self.assertEqual(main(), 0)
 
             # 2. No skill needed -> exit 1
-            mock_route.return_value = {"status": "no_skill_needed", "task": "some task", "specialist_noul": 0.1, "threshold": 0.6}
+            mock_route.return_value = RoutingResult(status="no_skill_needed", task="some task", specialist_noul=0.1, threshold=0.6)
             with patch.object(sys, "argv", ["tink-route", "some task"]):
                 self.assertEqual(main(), 1)
 
             # 3. Uncertain -> exit 1
-            mock_route.return_value = {"status": "uncertain", "task": "some task", "threshold": 0.6, "top_candidate": "fake", "probability": 0.5}
+            mock_route.return_value = RoutingResult(status="uncertain", task="some task", threshold=0.6, top_candidate="fake", probability=0.5)
             with patch.object(sys, "argv", ["tink-route", "some task"]):
                 self.assertEqual(main(), 1)
 
@@ -250,16 +251,16 @@ description: A skill without explicit name.
 
             # Test Dry Run first
             dry_res = prune_ephemeral_skills(tmppath, dry_run=True)
-            self.assertEqual(dry_res["pruned"], ["threejs-shaders"])
-            self.assertIn("manage-tink", dry_res["preserved"])
-            self.assertIn("my-permanent-skill", dry_res["preserved"])
+            self.assertEqual(dry_res.pruned, ["threejs-shaders"])
+            self.assertIn("manage-tink", dry_res.preserved)
+            self.assertIn("my-permanent-skill", dry_res.preserved)
             mock_subprocess.assert_not_called()
 
             # Test Actual Pruning (ledger-only default preserves foreign skills)
             live_res = prune_ephemeral_skills(tmppath, dry_run=False)
-            self.assertEqual(live_res["pruned"], ["threejs-shaders"])
-            self.assertIn("manage-tink", live_res["preserved"])
-            self.assertIn("my-permanent-skill", live_res["preserved"])
+            self.assertEqual(live_res.pruned, ["threejs-shaders"])
+            self.assertIn("manage-tink", live_res.preserved)
+            self.assertIn("my-permanent-skill", live_res.preserved)
             mock_subprocess.assert_called_once_with(
                 ["tink", "skill", "remove", "threejs-shaders"],
                 cwd=str(tmppath),
@@ -289,13 +290,13 @@ description: A skill without explicit name.
 
             # Default prune (ledger-only): must preserve cursor-skill
             res_default = prune_ephemeral_skills(tmppath, dry_run=False, all_unpinned=False)
-            self.assertEqual(res_default["pruned"], [])
-            self.assertIn("cursor-skill", res_default["preserved"])
+            self.assertEqual(res_default.pruned, [])
+            self.assertIn("cursor-skill", res_default.preserved)
             mock_subprocess.assert_not_called()
 
             # Opt-in broad sweep: prunes cursor-skill
             res_sweep = prune_ephemeral_skills(tmppath, dry_run=False, all_unpinned=True)
-            self.assertEqual(res_sweep["pruned"], ["cursor-skill"])
+            self.assertEqual(res_sweep.pruned, ["cursor-skill"])
             mock_subprocess.assert_called_once_with(
                 ["tink", "skill", "remove", "cursor-skill"],
                 cwd=str(tmppath),
@@ -348,15 +349,15 @@ description: A skill without explicit name.
         mock_urlopen.return_value.__enter__.side_effect = [resp_stage1, resp_batch1, resp_batch2]
 
         client = JevRouterClient(api_key="test-key")
-        result = client.route(task="Some task", skills=skills, threshold=0.60)
+        result = client.route(task="Some task", skills=skills, threshold=0.60, tri_gate=False, rerank=False)
 
-        self.assertEqual(result["status"], "routed")
-        self.assertEqual(result["winner"], "skill-0")
+        self.assertEqual(result.status, "routed")
+        self.assertEqual(result.winner, "skill-0")
         # Must be authentic 0.77, NOT hardcoded 0.85
-        self.assertEqual(result["confidence"], 0.77)
-        self.assertEqual(result["probability"], 0.77)
+        self.assertEqual(result.confidence, 0.77)
+        self.assertEqual(result.probability, 0.77)
 
-    @patch("tink_route.cli._install_skill_locked")
+    @patch("tink_route.core.engine.RoutingEngine.install_skill_locked")
     @patch("tink_route.cli.JevRouterClient.route")
     @patch("tink_route.cli.load_library_skills")
     def test_activation_contract_in_json_output(self, mock_load, mock_route, mock_install):
@@ -366,24 +367,23 @@ description: A skill without explicit name.
         from tink_route.cli import main
 
         mock_load.return_value = [{"name": "fake", "description": "fake desc"}]
-        mock_route.return_value = {
-            "status": "routed",
-            "winner": "fake",
-            "probability": 0.9,
-            "confidence": 0.9,
-            "specialist_noul": 0.9,
-            "threshold": 0.6
-        }
-        mock_install.return_value = {
-            "success": True,
-            "skill_path": ".agents/skills/fake/SKILL.md",
-            "references": [],
-            "scripts": [],
-            "stdout": "Installed",
-            "stderr": "",
-            "code": 0,
-            "was_pre_existing": False,
-        }
+        mock_route.return_value = RoutingResult(
+            status="routed",
+            task="some task",
+            winner="fake",
+            probability=0.9,
+            confidence=0.9,
+            specialist_noul=0.9,
+            threshold=0.6,
+        )
+        mock_install.return_value = InstallOutcome(
+            success=True,
+            stdout="Installed",
+            stderr="",
+            code=0,
+            skill_path=".agents/skills/fake/SKILL.md",
+            was_pre_existing=False,
+        )
 
         # 1. Recommendation-only: mode is install_required, entrypoint is None
         captured_rec = io.StringIO()
@@ -431,7 +431,7 @@ description: A skill without explicit name.
             (skills_dir / "SKILL.md").write_text("pre-existing manual cro")
 
             with patch("tink_route.cli.load_library_skills", return_value=[{"name": "cro", "description": "CRO"}]), \
-                 patch("tink_route.cli.JevRouterClient.route", return_value={"status": "routed", "winner": "cro", "probability": 0.95, "confidence": 0.95, "specialist_noul": 0.9}):
+                 patch("tink_route.cli.JevRouterClient.route", return_value=RoutingResult(status="routed", task="Optimize CRO", winner="cro", probability=0.95, confidence=0.95, specialist_noul=0.9)):
                 with patch.dict("os.environ", {"TYPESAFE_API_KEY": "dummy"}), \
                      patch("pathlib.Path.cwd", return_value=tmppath):
                     with patch.object(sys, "argv", ["tink-route", "-i", "Optimize CRO"]):
@@ -443,8 +443,8 @@ description: A skill without explicit name.
 
             # Prune must preserve cro
             prune_res = prune_ephemeral_skills(tmppath)
-            self.assertEqual(prune_res["pruned"], [])
-            self.assertIn("cro", prune_res["preserved"])
+            self.assertEqual(prune_res.pruned, [])
+            self.assertIn("cro", prune_res.preserved)
 
     def test_toml_manifest_pinning_and_fail_closed(self):
         """Critique P1.2: tomllib handles valid TOML syntax and fails closed on invalid TOML."""
@@ -472,7 +472,7 @@ description: A skill without explicit name.
             with self.assertRaises(ManifestSyntaxError):
                 load_pinned_skills(tmppath)
 
-    @patch("tink_route.cli._install_skill_locked")
+    @patch("tink_route.core.engine.RoutingEngine.install_skill_locked")
     @patch("tink_route.cli.JevRouterClient.route")
     @patch("tink_route.cli.load_library_skills")
     def test_failed_installation_exits_2(self, mock_load, mock_route, mock_install):
@@ -482,24 +482,23 @@ description: A skill without explicit name.
         from tink_route.cli import main
 
         mock_load.return_value = [{"name": "cro", "description": "CRO"}]
-        mock_route.return_value = {
-            "status": "routed",
-            "winner": "cro",
-            "probability": 0.9,
-            "confidence": 0.9,
-            "specialist_noul": 0.9,
-            "threshold": 0.6
-        }
-        mock_install.return_value = {
-            "success": False,
-            "skill_path": None,
-            "references": [],
-            "scripts": [],
-            "stdout": "",
-            "stderr": "Library skill not found",
-            "code": 1,
-            "was_pre_existing": False,
-        }
+        mock_route.return_value = RoutingResult(
+            status="routed",
+            task="Optimize CRO",
+            winner="cro",
+            probability=0.9,
+            confidence=0.9,
+            specialist_noul=0.9,
+            threshold=0.6,
+        )
+        mock_install.return_value = InstallOutcome(
+            success=False,
+            stdout="",
+            stderr="Library skill not found",
+            code=1,
+            skill_path=None,
+            was_pre_existing=False,
+        )
 
         captured = io.StringIO()
         with patch.dict("os.environ", {"TYPESAFE_API_KEY": "dummy"}):
@@ -528,7 +527,7 @@ description: A skill without explicit name.
             self.assertEqual(load_ephemeral_skills(tmppath), [])
             # Prune should not raise
             res = prune_ephemeral_skills(tmppath)
-            self.assertEqual(res["pruned"], [])
+            self.assertEqual(res.pruned, [])
 
             # unhashable elements in skills
             ledger.write_text('{"skills": [{}]}')
@@ -578,12 +577,12 @@ description: A skill without explicit name.
         mock_urlopen.return_value.__enter__.side_effect = [resp_stage1, resp_batch1, resp_batch2]
 
         client = JevRouterClient(api_key="test-key")
-        result = client.route(task="Some task", skills=skills, threshold=0.60)
+        result = client.route(task="Some task", skills=skills, threshold=0.60, tri_gate=False, rerank=False)
 
         # Must report no_match, NOT no_skill_needed!
-        self.assertEqual(result["status"], "no_match")
-        self.assertEqual(result["specialist_noul"], 0.92)
-        self.assertGreaterEqual(result["confidence"], 0.90)
+        self.assertEqual(result.status, "no_match")
+        self.assertEqual(result.specialist_noul, 0.92)
+        self.assertGreaterEqual(result.confidence, 0.90)
 
     def test_frontmatter_strips_quotes(self):
         """Critique P2.3: parse_skill_metadata strips surrounding quotes from name and description."""
@@ -635,26 +634,26 @@ description: 'quoted description'
             expected = {f"skill-{i}" for i in range(num_threads)}
             self.assertEqual(recorded, expected)
 
-    @patch("tink_route.cli.prune_ephemeral_skills")
+    @patch("tink_route.core.engine.RoutingEngine.prune")
     def test_partial_prune_failure_returns_exit_2(self, mock_prune):
         """Audit Finding 2: Partial prune failures must return exit code 2."""
         import sys
         from tink_route.cli import main
 
-        mock_prune.return_value = {
-            "pruned": ["success-skill"],
-            "preserved": [],
-            "errors": [{"skill": "failing-skill", "error": "removal failed"}],
-            "dry_run": False,
-            "count": 1,
-        }
+        mock_prune.return_value = PruneReport(
+            pruned=["success-skill"],
+            preserved=[],
+            errors=[{"skill": "failing-skill", "error": "removal failed"}],
+            dry_run=False,
+            count=1,
+        )
         with patch.object(sys, "argv", ["tink-route", "prune"]):
             code = main()
 
         self.assertEqual(code, 2)
 
-    @patch("tink_route.cli._record_ephemeral_skill_locked")
-    @patch("tink_route.cli._install_skill_locked")
+    @patch("tink_route.adapters.ledger.FilesystemLedger.record_ephemeral_skill_locked")
+    @patch("tink_route.core.engine.RoutingEngine.install_skill_locked")
     @patch("tink_route.cli.JevRouterClient.route")
     @patch("tink_route.cli.load_library_skills")
     def test_ledger_write_failure_handled_cleanly(self, mock_load, mock_route, mock_install, mock_record):
@@ -664,24 +663,23 @@ description: 'quoted description'
         from tink_route.cli import main
 
         mock_load.return_value = [{"name": "cro", "description": "CRO"}]
-        mock_route.return_value = {
-            "status": "routed",
-            "winner": "cro",
-            "probability": 0.95,
-            "confidence": 0.95,
-            "specialist_noul": 0.9,
-            "threshold": 0.6
-        }
-        mock_install.return_value = {
-            "success": True,
-            "skill_path": ".agents/skills/cro/SKILL.md",
-            "references": [],
-            "scripts": [],
-            "stdout": "Installed",
-            "stderr": "",
-            "code": 0,
-            "was_pre_existing": False,
-        }
+        mock_route.return_value = RoutingResult(
+            status="routed",
+            task="Optimize CRO",
+            winner="cro",
+            probability=0.95,
+            confidence=0.95,
+            specialist_noul=0.9,
+            threshold=0.6,
+        )
+        mock_install.return_value = InstallOutcome(
+            success=True,
+            stdout="Installed",
+            stderr="",
+            code=0,
+            skill_path=".agents/skills/cro/SKILL.md",
+            was_pre_existing=False,
+        )
         mock_record.side_effect = PermissionError("Read-only filesystem")
 
         captured = io.StringIO()
@@ -727,7 +725,7 @@ description: 'quoted description'
                 task="Malicious task",
                 skills=[{"name": "valid-skill", "description": "Valid skill"}],
                 threshold=0.60
-            )
+            , tri_gate=False, rerank=False)
 
         self.assertIn("invalid candidate", str(ctx.exception))
 

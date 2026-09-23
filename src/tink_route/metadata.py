@@ -10,7 +10,7 @@ from .core.validation import is_valid_skill_name
 def parse_skill_metadata(content: str, fallback_name: str) -> dict[str, str]:
     """Extract name and description from SKILL.md frontmatter.
 
-    Supports UTF-8 BOM stripping (META-1), YAML chomping indicators >-, >+, |-, |+
+    Supports UTF-8 BOM stripping (META-1), folded and literal YAML blocks
     with paragraph preservation (META-2), and name validation (META-3).
     """
     # META-1: Strip UTF-8 BOM if present
@@ -24,7 +24,6 @@ def parse_skill_metadata(content: str, fallback_name: str) -> dict[str, str]:
         desc_lines: list[str] = []
         in_multiline_desc = False
         block_style = ""
-        chomp = ""
         closing_dash_idx = -1
 
         for idx, line in enumerate(lines[1:], start=1):
@@ -57,7 +56,6 @@ def parse_skill_metadata(content: str, fallback_name: str) -> dict[str, str]:
                 rest = line.split(":", 1)[1].strip()
                 if rest.startswith(">") or rest.startswith("|"):
                     block_style = rest[0]
-                    chomp = rest[1:2] if len(rest) > 1 and rest[1] in ("-", "+") else ""
                     in_multiline_desc = True
                     desc_lines = []
                 else:
@@ -81,12 +79,10 @@ def parse_skill_metadata(content: str, fallback_name: str) -> dict[str, str]:
             else:
                 joined = "\n".join(dl.rstrip() for dl in desc_lines)
 
-            if chomp == "-":
-                description = joined.strip()
-            elif chomp == "+":
-                description = joined
-            else:
-                description = joined.strip()
+            description = joined.strip()
+
+        if closing_dash_idx < 0:
+            return {"name": name if is_valid_skill_name(name) else fallback_name, "description": "", "body": content.strip()}
 
         if closing_dash_idx > 0 and closing_dash_idx + 1 < len(lines):
             body = "\n".join(lines[closing_dash_idx + 1:]).strip()
@@ -119,7 +115,7 @@ def load_library_skills(library_dir: Path) -> list[dict[str, str]]:
 
         try:
             # META-1: utf-8-sig to automatically strip BOM on read
-            content = skill_file.read_text(encoding="utf-8-sig", errors="ignore")
+            content = skill_file.read_text(encoding="utf-8-sig", errors="replace")
             meta = parse_skill_metadata(content, fallback_name=child.stem if child.is_file() else child.name)
             if meta.get("description"):
                 if meta["name"] in names:
@@ -132,6 +128,8 @@ def load_library_skills(library_dir: Path) -> list[dict[str, str]]:
                     "body": meta.get("body", "")[:RERANK_BODY_EXCERPT_CHARS],
                     "path": str(skill_file.resolve()),
                 })
+        except SkillValidationError:
+            continue
         except ValueError:
             raise
         except Exception:

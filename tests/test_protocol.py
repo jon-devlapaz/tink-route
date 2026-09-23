@@ -140,9 +140,9 @@ class TestProtocolAndReduction(unittest.TestCase):
                 }
 
             with patch.object(self.client, "_call_api", side_effect=fake_call_api):
-                res = self.client.route("Some task", skills, threshold=0.60)
-                self.assertEqual(res["status"], "routed")
-                self.assertIsNotNone(res["winner"])
+                res = self.client.route("Some task", skills, threshold=0.60, tri_gate=False, rerank=False)
+                self.assertEqual(res.status, "routed")
+                self.assertIsNotNone(res.winner)
 
     def test_proto_5_sentinel_precedence_highest_probability(self) -> None:
         """PROTO-5: Sentinel precedence selects highest probability sentinel across batches."""
@@ -172,11 +172,11 @@ class TestProtocolAndReduction(unittest.TestCase):
         }
 
         with patch.object(self.client, "_call_api", side_effect=[noul_resp, resp_b1, resp_b2]):
-            res = self.client.route("Simple task", skills, threshold=0.60)
+            res = self.client.route("Simple task", skills, threshold=0.60, tri_gate=False, rerank=False)
             # __no_skill__ (0.98) has higher probability than __no_match__ (0.30)
             # Must NOT be overwritten with no_match!
-            self.assertEqual(res["status"], "no_skill_needed")
-            self.assertEqual(res["confidence"], 0.98)
+            self.assertEqual(res.status, "no_skill_needed")
+            self.assertEqual(res.confidence, 0.98)
 
     def test_proto_6_track_global_top_candidate_across_sentinel_batches(self) -> None:
         """PROTO-6: Track global top candidate and runner-up across all sentinel batches."""
@@ -212,13 +212,13 @@ class TestProtocolAndReduction(unittest.TestCase):
 
         with patch.object(self.client, "_call_api", side_effect=[noul_resp, resp_b1, resp_b2]):
             # Threshold 0.60 -> both winners fell below threshold, resulting in status "uncertain" or "no_match"
-            res = self.client.route("Borderline task", skills, threshold=0.60)
+            res = self.client.route("Borderline task", skills, threshold=0.60, tri_gate=False, rerank=False)
             # Global top candidate across ALL batches should be skill-24 (0.49), runner-up skill-5 (0.45)
-            self.assertEqual(res["top_candidate"], "skill-24")
-            self.assertEqual(res["probability"], 0.49)
-            self.assertEqual(res["runner_up"], "skill-5")
-            self.assertEqual(res["runner_up_probability"], 0.45)
-            self.assertEqual(res["margin"], 0.04)
+            self.assertEqual(res.top_candidate, "skill-24")
+            self.assertEqual(res.probability, 0.49)
+            self.assertEqual(res.runner_up, "skill-5")
+            self.assertEqual(res.runner_up_probability, 0.45)
+            self.assertEqual(res.margin, 0.04)
 
 
 if __name__ == "__main__":

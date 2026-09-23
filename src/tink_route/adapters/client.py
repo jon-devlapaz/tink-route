@@ -5,6 +5,7 @@ import math
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Any
 
 from ..core.constants import (
@@ -52,6 +53,22 @@ __all__ = [
     "NEED_INSTRUCTIONS",
     "RANK_INSTRUCTIONS",
 ]
+
+_SENTINELS = (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL)
+
+
+@dataclass(frozen=True)
+class Ranking:
+    """One stage's decision. `pool` is the stage-2 score of every real skill and is not replaced by rerank."""
+
+    winner: str
+    confidence: float
+    probability: float
+    probs: dict[str, float]
+    pool: dict[str, float]
+    ranked: tuple[tuple[str, float], ...]
+    fits: dict[str, float] | None = None
+    shortlist: tuple[str, ...] | None = None
 
 
 class JevRouterClient:
@@ -226,100 +243,72 @@ class JevRouterClient:
         parsed["fits"] = fits
         return parsed
 
-    def route(
-        self,
-        task: str,
-        skills: list[dict[str, str]],
-        threshold: float = DEFAULT_THRESHOLD,
-        tri_gate: bool = False,
-        rerank: bool = False,
-        fits_threshold: float = FITS_THRESHOLD,
-        multi: bool = False,
-        top_k: int = MULTI_DEFAULT_TOP_K,
-    ) -> RoutingResult:
-        if not math.isfinite(threshold) or not 0 <= threshold <= 1:
-            raise ValueError("Threshold must be finite and between 0 and 1")
-        if not math.isfinite(fits_threshold) or not 0 <= fits_threshold <= 1:
-            raise ValueError("Fits threshold must be finite and between 0 and 1")
-        if not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= MULTI_MAX_TOP_K:
-            raise ValueError(f"top_k must be an integer between 1 and {MULTI_MAX_TOP_K}")
-        start_time = time.monotonic()
-
-        # --- Stage 1: Specialist Need Gate (Noul) ---
-        if tri_gate:
-            stage1_questions: dict[str, Any] = {
+    def _specialist_score(self, task: str, *, tri: bool) -> float:
+        if tri:
+            questions: dict[str, Any] = {
                 q_name: {"type": "noul", "instructions": q_instructions}
                 for q_name, q_instructions in GATE_QUESTIONS.items()
             }
         else:
-            stage1_questions = {
-                "specialist_needed": {
-                    "type": "noul",
-                    "instructions": NEED_INSTRUCTIONS,
-                }
+            questions = {
+                "specialist_needed": {"type": "noul", "instructions": NEED_INSTRUCTIONS},
             }
-
-        stage1_payload = {
-            "model": self.model,
-            "state": {"task": task},
-            "questions": stage1_questions,
-        }
-
-        stage1_resp = self._call_api(stage1_payload)
-        stage1_answers = stage1_resp.get("answers") if isinstance(stage1_resp, dict) else None
-        if not isinstance(stage1_answers, dict):
-            raise ApiProtocolError(
-                f"Invalid API response from TypeSafe: missing answers: {stage1_resp}"
-            )
-
-        if tri_gate:
-            missing = [k for k in GATE_QUESTIONS if k not in stage1_answers]
+        resp = self._call_api({"model": self.model, "state": {"task": task}, "questions": questions})
+        answers = resp.get("answers") if isinstance(resp, dict) else None
+        if not isinstance(answers, dict):
+            raise ApiProtocolError(f"Invalid API response from TypeSafe: missing answers: {resp}")
+        if tri:
+            missing = [k for k in GATE_QUESTIONS if k not in answers]
             if missing:
                 raise ApiProtocolError(
                     f"Invalid API response from TypeSafe: missing gate answers: {missing}"
                 )
-            acts = self._parse_noul(stage1_answers["acts_on_user_system"], "acts_on_user_system")
+            acts = self._parse_noul(answers["acts_on_user_system"], "acts_on_user_system")
             proc = self._parse_noul(
-                stage1_answers["would_follow_documented_procedure"],
+                answers["would_follow_documented_procedure"],
                 "would_follow_documented_procedure",
             )
-            prose = self._parse_noul(stage1_answers["prose_suffices"], "prose_suffices")
-            specialist_noul = round((acts + proc + (1.0 - prose)) / 3.0, 3)
+            prose = self._parse_noul(answers["prose_suffices"], "prose_suffices")
+            return round((acts + proc + (1.0 - prose)) / 3.0, 3)
+        if "specialist_needed" not in answers:
+            raise ApiProtocolError(
+                f"Invalid API response from TypeSafe: missing specialist_needed answer: {resp}"
+            )
+        return self._parse_noul(answers["specialist_needed"], "specialist_needed")
+
+    def _remember_pool(self, pool: dict[str, float], probs: dict[str, float]) -> None:
+        for name, score in probs.items():
+            if name in _SENTINELS:
+                continue
+            if name not in pool or score > pool[name]:
+                pool[name] = score
+
+    def _ranking(self, parsed: dict[str, Any], pool: dict[str, float]) -> Ranking:
+        winner = str(parsed["winner"])
+        probs = {str(k): float(v) for k, v in dict(parsed["probabilities"]).items()}
+        if winner in _SENTINELS and pool:
+            ranked = tuple(sorted(pool.items(), key=lambda item: item[1], reverse=True))
         else:
-            if "specialist_needed" not in stage1_answers:
-                raise ApiProtocolError(
-                    f"Invalid API response from TypeSafe: missing specialist_needed answer: {stage1_resp}"
-                )
-            specialist_noul = self._parse_noul(
-                stage1_answers["specialist_needed"], "specialist_needed"
+            ranked = tuple(
+                (name, score)
+                for name, score in sorted(probs.items(), key=lambda item: item[1], reverse=True)
+                if name not in _SENTINELS
             )
+        return Ranking(
+            winner=winner,
+            confidence=float(parsed["confidence"]),
+            probability=float(parsed["probability"]),
+            probs=probs,
+            pool=dict(pool),
+            ranked=ranked,
+        )
 
-        if specialist_noul < threshold:
-            elapsed = int((time.monotonic() - start_time) * 1000)
-            return RoutingResult(
-                status="no_skill_needed",
-                task=task,
-                specialist_noul=specialist_noul,
-                threshold=threshold,
-                elapsed_ms=elapsed,
-            )
-
-        if not skills:
-            elapsed = int((time.monotonic() - start_time) * 1000)
-            return RoutingResult(
-                status="no_candidates_available",
-                task=task,
-                specialist_noul=specialist_noul,
-                threshold=threshold,
-                elapsed_ms=elapsed,
-            )
-
-        # --- Stage 2: Candidate Ranking & Selection (Choice) ---
-        def evaluate_batch(candidates: list[dict[str, str]]) -> dict[str, Any]:
-            criteria = {c["name"]: c["description"] for c in candidates}
-            criteria[NO_SKILL_SENTINEL] = "Standard coding tools, simple edits, or general explanations suffice."
-            criteria[NO_MATCH_SENTINEL] = "None of the available candidate skills match the requested workflow."
-            stage2_payload = {
+    def _evaluate_batch(self, task: str, candidates: list[dict[str, str]]) -> dict[str, Any]:
+        criteria = {c["name"]: c["description"] for c in candidates}
+        criteria[NO_SKILL_SENTINEL] = "Standard coding tools, simple edits, or general explanations suffice."
+        criteria[NO_MATCH_SENTINEL] = "None of the available candidate skills match the requested workflow."
+        return self._call_api(
+            {
                 "model": self.model,
                 "state": {"task": task},
                 "questions": {
@@ -330,200 +319,157 @@ class JevRouterClient:
                     }
                 },
             }
-            return self._call_api(stage2_payload)
+        )
 
-        global_candidate_probs: dict[str, float] = {}
-
+    def _rank_library(self, task: str, skills: list[dict[str, str]]) -> Ranking:
+        """Stage 2. Returns a Ranking whose pool holds every non-sentinel score seen."""
+        pool: dict[str, float] = {}
         if len(skills) <= BATCH_SIZE:
-            valid_batch_candidates = {s["name"] for s in skills} | {NO_SKILL_SENTINEL, NO_MATCH_SENTINEL}
-            resp = evaluate_batch(skills)
-            parsed = self._parse_choice(resp, valid_batch_candidates)
-            winner: str = str(parsed["winner"])
-            conf: float = float(parsed["confidence"])
-            probs: dict[str, float] = dict(parsed["probabilities"])
-            winner_prob: float = float(parsed["probability"])
-            for k, v in probs.items():
-                if k not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL):
-                    global_candidate_probs[k] = v
-        else:
-            # Multi-batch routing with tournament reduction (PROTO-4)
-            current_skills: list[dict[str, str]] = list(skills)
-            sentinel_batches: list[dict[str, Any]] = []
+            valid = {s["name"] for s in skills} | set(_SENTINELS)
+            parsed = self._parse_choice(self._evaluate_batch(task, skills), valid)
+            self._remember_pool(pool, parsed["probabilities"])
+            return self._ranking(parsed, pool)
 
-            while True:
-                round_winners: list[dict[str, Any]] = []
-                for i in range(0, len(current_skills), BATCH_SIZE):
-                    chunk = current_skills[i : i + BATCH_SIZE]
-                    b_resp = evaluate_batch(chunk)
-                    b_candidates = {s["name"] for s in chunk} | {NO_SKILL_SENTINEL, NO_MATCH_SENTINEL}
-                    parsed = self._parse_choice(b_resp, b_candidates)
-                    b_winner = str(parsed["winner"])
-                    b_conf = float(parsed["confidence"])
-                    b_probs: dict[str, float] = dict(parsed["probabilities"])
-                    b_prob = float(parsed["probability"])
-
-                    # PROTO-6: Track global top candidate across sentinel batches
-                    for k, v in b_probs.items():
-                        if k not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL):
-                            if k not in global_candidate_probs or v > global_candidate_probs[k]:
-                                global_candidate_probs[k] = v
-
-                    reason_entry = {
-                        "winner": b_winner,
-                        "confidence": b_conf,
-                        "probabilities": b_probs,
-                        "probability": b_prob,
-                    }
-
-                    if b_winner not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL):
-                        matching = [s for s in chunk if s["name"] == b_winner]
-                        if matching:
-                            round_winners.append({
-                                "skill": matching[0],
-                                "winner": b_winner,
-                                "confidence": b_conf,
-                                "probabilities": b_probs,
-                                "probability": b_prob,
-                            })
-                    else:
-                        sentinel_batches.append(reason_entry)
-
-                if not round_winners:
-                    # PROTO-5: select sentinel with highest probability across batches
-                    best_sentinel = max(sentinel_batches, key=lambda br: float(br["probability"]))
-                    winner = str(best_sentinel["winner"])
-                    conf = float(best_sentinel["confidence"])
-                    winner_prob = float(best_sentinel["probability"])
-                    probs = dict(best_sentinel["probabilities"])
-                    break
-                elif len(round_winners) == 1:
-                    bw = round_winners[0]
-                    winner = str(bw["winner"])
-                    conf = float(bw["confidence"])
-                    probs = dict(bw["probabilities"])
-                    winner_prob = float(bw["probability"])
-                    break
-                else:
-                    # Multiple round winners: recursive tournament reduction if > BATCH_SIZE (PROTO-4)
-                    survivor_skills = [rw["skill"] for rw in round_winners]
-                    if len(survivor_skills) > BATCH_SIZE:
-                        current_skills = survivor_skills
-                        continue
-
-                    # Final reduction batch for survivors
-                    final_resp = evaluate_batch(survivor_skills)
-                    final_candidates = {s["name"] for s in survivor_skills} | {NO_SKILL_SENTINEL, NO_MATCH_SENTINEL}
-                    parsed = self._parse_choice(final_resp, final_candidates)
-                    winner = str(parsed["winner"])
-                    conf = float(parsed["confidence"])
-                    probs = dict(parsed["probabilities"])
-                    winner_prob = float(parsed["probability"])
-                    for k, v in probs.items():
-                        if k not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL):
-                            global_candidate_probs[k] = v
-                    break
-
-        # PROTO-6: Extract top candidate, runner up, and margin
-        if winner in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL) and global_candidate_probs:
-            ranked_candidates = sorted(
-                global_candidate_probs.items(),
-                key=lambda item: item[1],
-                reverse=True,
-            )
-        else:
-            ranked_candidates = [
-                (name, float(p))
-                for name, p in sorted(probs.items(), key=lambda item: float(item[1]), reverse=True)
-                if name not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL)
-            ]
-
-        top_cand = ranked_candidates[0][0] if ranked_candidates else None
-        top_p = ranked_candidates[0][1] if ranked_candidates else 0.0
-        runner_up = ranked_candidates[1][0] if len(ranked_candidates) > 1 else None
-        runner_up_p = ranked_candidates[1][1] if len(ranked_candidates) > 1 else 0.0
-        margin = round(top_p - runner_up_p, 2)
-
-        fits: dict[str, float] | None = None
-        shortlist: list[str] | None = None
-
-        if (
-            rerank
-            and winner not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL)
-            and ranked_candidates
-        ):
-            skill_by_name = {s["name"]: s for s in skills}
-            shortlist_names: list[str] = []
-            if winner and winner in skill_by_name:
-                shortlist_names.append(winner)
-            for name, _p in ranked_candidates:
-                if name in skill_by_name and name not in shortlist_names:
-                    shortlist_names.append(name)
-                if len(shortlist_names) >= RERANK_SHORTLIST_SIZE:
-                    break
-            if shortlist_names:
-                shortlist = list(shortlist_names)
-                reranked = self._rerank_shortlist(task, shortlist_names, skill_by_name)
-                winner = str(reranked["winner"])
-                conf = float(reranked["confidence"])
-                probs = dict(reranked["probabilities"])
-                winner_prob = float(reranked["probability"])
-                fits = dict(reranked["fits"])
-                ranked_candidates = [
-                    (name, float(p))
-                    for name, p in sorted(
-                        probs.items(), key=lambda item: float(item[1]), reverse=True
-                    )
-                    if name not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL)
-                ]
-                top_cand = ranked_candidates[0][0] if ranked_candidates else None
-                top_p = ranked_candidates[0][1] if ranked_candidates else 0.0
-                runner_up = ranked_candidates[1][0] if len(ranked_candidates) > 1 else None
-                runner_up_p = ranked_candidates[1][1] if len(ranked_candidates) > 1 else 0.0
-                margin = round(top_p - runner_up_p, 2)
-                winner_fit = (
-                    fits.get(winner, 0.0)
-                    if winner not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL)
-                    else 0.0
+        current_skills: list[dict[str, str]] = list(skills)
+        sentinel_batches: list[dict[str, Any]] = []
+        while True:
+            round_winners: list[dict[str, Any]] = []
+            for i in range(0, len(current_skills), BATCH_SIZE):
+                chunk = current_skills[i : i + BATCH_SIZE]
+                parsed = self._parse_choice(
+                    self._evaluate_batch(task, chunk),
+                    {s["name"] for s in chunk} | set(_SENTINELS),
                 )
-                max_fit = max(fits.values()) if fits else 0.0
-                if winner not in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL) and (
-                    max_fit < fits_threshold or winner_fit < fits_threshold
-                ):
-                    winner = NO_MATCH_SENTINEL
-                    winner_prob = 0.0
+                self._remember_pool(pool, parsed["probabilities"])
+                if parsed["winner"] not in _SENTINELS:
+                    matching = [s for s in chunk if s["name"] == parsed["winner"]]
+                    if matching:
+                        round_winners.append({"skill": matching[0], "parsed": parsed})
+                else:
+                    sentinel_batches.append(parsed)
 
-        elapsed = int((time.monotonic() - start_time) * 1000)
+            if not round_winners:
+                best = max(sentinel_batches, key=lambda item: float(item["probability"]))
+                return self._ranking(best, pool)
+            if len(round_winners) == 1:
+                return self._ranking(round_winners[0]["parsed"], pool)
 
-        if multi and ranked_candidates:
-            qualified: list[dict[str, Any]] = [
-                {"skill": name, "probability": p}
-                for name, p in ranked_candidates
-                if p >= threshold
-            ][:top_k]
-            if qualified:
-                best_name: str = str(qualified[0]["skill"])
-                best_p: float = float(qualified[0]["probability"])
-                second_name: str | None = str(qualified[1]["skill"]) if len(qualified) > 1 else None
-                second_p: float = float(qualified[1]["probability"]) if len(qualified) > 1 else 0.0
+            survivor_skills = [rw["skill"] for rw in round_winners]
+            if len(survivor_skills) > BATCH_SIZE:
+                current_skills = survivor_skills
+                continue
+
+            parsed = self._parse_choice(
+                self._evaluate_batch(task, survivor_skills),
+                {s["name"] for s in survivor_skills} | set(_SENTINELS),
+            )
+            for name, score in parsed["probabilities"].items():
+                if name not in _SENTINELS:
+                    pool[name] = float(score)
+            return self._ranking(parsed, pool)
+
+    def _apply_rerank(
+        self,
+        task: str,
+        ranking: Ranking,
+        skills: list[dict[str, str]],
+        fits_threshold: float,
+    ) -> Ranking:
+        """Stage 3. Returns a new Ranking. The stage-2 pool is copied through unchanged."""
+        if ranking.winner in _SENTINELS:
+            return ranking
+        skill_by_name = {s["name"]: s for s in skills}
+        shortlist: list[str] = []
+        if ranking.winner in skill_by_name:
+            shortlist.append(ranking.winner)
+        for name, _score in ranking.ranked:
+            if name in skill_by_name and name not in shortlist:
+                shortlist.append(name)
+            if len(shortlist) >= RERANK_SHORTLIST_SIZE:
+                break
+        if not shortlist:
+            return ranking
+
+        reranked = self._rerank_shortlist(task, shortlist, skill_by_name)
+        winner = str(reranked["winner"])
+        probability = float(reranked["probability"])
+        fits = {str(k): float(v) for k, v in dict(reranked["fits"]).items()}
+        probs = {str(k): float(v) for k, v in dict(reranked["probabilities"]).items()}
+        ranked = tuple(
+            (name, score)
+            for name, score in sorted(probs.items(), key=lambda item: item[1], reverse=True)
+            if name not in _SENTINELS
+        )
+        if winner not in _SENTINELS:
+            winner_fit = fits.get(winner, 0.0)
+            max_fit = max(fits.values()) if fits else 0.0
+            if max_fit < fits_threshold or winner_fit < fits_threshold:
+                winner = NO_MATCH_SENTINEL
+                probability = 0.0
+        return Ranking(
+            winner=winner,
+            confidence=float(reranked["confidence"]),
+            probability=probability,
+            probs=probs,
+            pool=dict(ranking.pool),
+            ranked=ranked,
+            fits=fits,
+            shortlist=tuple(shortlist),
+        )
+
+    def _assemble(
+        self,
+        ranking: Ranking,
+        *,
+        task: str,
+        specialist_noul: float,
+        threshold: float,
+        elapsed_ms: int,
+        top_k: int | None,
+    ) -> RoutingResult:
+        top_cand = ranking.ranked[0][0] if ranking.ranked else None
+        top_p = ranking.ranked[0][1] if ranking.ranked else 0.0
+        runner_up = ranking.ranked[1][0] if len(ranking.ranked) > 1 else None
+        runner_up_p = ranking.ranked[1][1] if len(ranking.ranked) > 1 else 0.0
+        margin = round(top_p - runner_up_p, 2)
+        shortlist = list(ranking.shortlist) if ranking.shortlist is not None else None
+        vetoed = ranking.winner in _SENTINELS or not ranking.winner or ranking.probability < threshold
+
+        if top_k is not None and not vetoed:
+            pool_p = ranking.pool.get(ranking.winner)
+            if pool_p is not None and pool_p >= threshold:
+                ordered = sorted(ranking.pool.items(), key=lambda item: item[1], reverse=True)
+                qualified = [(name, score) for name, score in ordered if score >= threshold]
+                qualified = [(ranking.winner, pool_p)] + [
+                    (name, score) for name, score in qualified if name != ranking.winner
+                ]
+                qualified = qualified[:top_k]
+                second = qualified[1] if len(qualified) > 1 else None
+                second_p = second[1] if second else 0.0
                 return RoutingResult(
                     status="multi_routed",
                     task=task,
-                    winner=best_name,
-                    probability=best_p,
-                    runner_up=second_name,
-                    runner_up_probability=second_p,
-                    margin=round(best_p - second_p if second_name else best_p, 2),
-                    confidence=conf,
+                    winner=ranking.winner,
+                    probability=ranking.probability,
+                    runner_up=second[0] if second else None,
+                    runner_up_probability=second_p if second else None,
+                    margin=round(abs(pool_p - second_p) if second else pool_p, 2),
+                    confidence=ranking.confidence,
                     specialist_noul=specialist_noul,
                     threshold=threshold,
-                    elapsed_ms=elapsed,
-                    fits=fits,
+                    elapsed_ms=elapsed_ms,
+                    fits=ranking.fits,
                     shortlist=shortlist,
-                    candidates=qualified,
+                    candidates=[{"skill": name, "probability": score} for name, score in qualified],
                 )
 
-        if winner in (NO_SKILL_SENTINEL, NO_MATCH_SENTINEL) or not winner or winner_prob < threshold:
-            reason = "no_skill_needed" if winner == NO_SKILL_SENTINEL else ("no_match" if winner == NO_MATCH_SENTINEL else "uncertain")
+        if vetoed:
+            if ranking.winner == NO_SKILL_SENTINEL:
+                reason = "no_skill_needed"
+            elif ranking.winner == NO_MATCH_SENTINEL:
+                reason = "no_match"
+            else:
+                reason = "uncertain"
             return RoutingResult(
                 status=reason,
                 task=task,
@@ -533,25 +479,76 @@ class JevRouterClient:
                 runner_up=runner_up,
                 runner_up_probability=runner_up_p,
                 margin=margin,
-                confidence=conf,
+                confidence=ranking.confidence,
                 threshold=threshold,
-                elapsed_ms=elapsed,
-                fits=fits,
+                elapsed_ms=elapsed_ms,
+                fits=ranking.fits,
                 shortlist=shortlist,
             )
 
         return RoutingResult(
             status="routed",
             task=task,
-            winner=winner,
-            probability=winner_prob,
+            winner=ranking.winner,
+            probability=ranking.probability,
             runner_up=runner_up,
             runner_up_probability=runner_up_p,
             margin=margin,
-            confidence=conf,
+            confidence=ranking.confidence,
             specialist_noul=specialist_noul,
             threshold=threshold,
-            elapsed_ms=elapsed,
-            fits=fits,
+            elapsed_ms=elapsed_ms,
+            fits=ranking.fits,
             shortlist=shortlist,
+        )
+
+    def route(
+        self,
+        task: str,
+        skills: list[dict[str, str]],
+        threshold: float = DEFAULT_THRESHOLD,
+        tri_gate: bool = True,
+        rerank: bool = True,
+        fits_threshold: float = FITS_THRESHOLD,
+        multi: bool = False,
+        top_k: int = MULTI_DEFAULT_TOP_K,
+    ) -> RoutingResult:
+        if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+            raise ValueError("Threshold must be finite and between 0 and 1")
+        if not math.isfinite(fits_threshold) or not 0 <= fits_threshold <= 1:
+            raise ValueError("Fits threshold must be finite and between 0 and 1")
+        if not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= MULTI_MAX_TOP_K:
+            raise ValueError(f"top_k must be an integer between 1 and {MULTI_MAX_TOP_K}")
+
+        start_time = time.monotonic()
+        specialist_noul = self._specialist_score(task, tri=tri_gate)
+        elapsed_ms = int((time.monotonic() - start_time) * 1000)
+        if specialist_noul < threshold:
+            return RoutingResult(
+                status="no_skill_needed",
+                task=task,
+                specialist_noul=specialist_noul,
+                threshold=threshold,
+                elapsed_ms=elapsed_ms,
+            )
+        if not skills:
+            return RoutingResult(
+                status="no_candidates_available",
+                task=task,
+                specialist_noul=specialist_noul,
+                threshold=threshold,
+                elapsed_ms=elapsed_ms,
+            )
+
+        ranking = self._rank_library(task, skills)
+        if rerank:
+            ranking = self._apply_rerank(task, ranking, skills, fits_threshold)
+        elapsed_ms = int((time.monotonic() - start_time) * 1000)
+        return self._assemble(
+            ranking,
+            task=task,
+            specialist_noul=specialist_noul,
+            threshold=threshold,
+            elapsed_ms=elapsed_ms,
+            top_k=top_k if multi else None,
         )

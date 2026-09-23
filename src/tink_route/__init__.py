@@ -16,7 +16,7 @@ from .core.exceptions import (
     SkillValidationError,
     TinkRouteError,
 )
-from .core.models import InstallOutcome, PruneReport, RoutingResult, SkillMetadata
+from .core.models import InstallOutcome, PruneReport, RoutingResult
 from .core.validation import is_valid_skill_name, validate_skill_dir_containment
 from .ephemeral import (
     load_ephemeral_skills,
@@ -44,7 +44,6 @@ __all__ = [
     "RoutingResult",
     "PruneReport",
     "InstallOutcome",
-    "SkillMetadata",
     "is_valid_skill_name",
     "validate_skill_dir_containment",
     "RoutingEngine",

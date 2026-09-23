@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from tink_route.adapters.client import JevRouterClient
 from tink_route.core.engine import RoutingEngine
+from tink_route.core.models import RoutingResult
 
 
 def _gate(high: float = 0.9) -> dict:
@@ -40,7 +41,7 @@ class TestMultiRouting(unittest.TestCase):
         with patch.object(
             self.client, "_call_api", side_effect=[_gate(), _stage2("skill-a", probs)]
         ) as api:
-            res = self.client.route("Do A then B", SKILLS, multi=True, top_k=2)
+            res = self.client.route("Do A then B", SKILLS, multi=True, top_k=2, tri_gate=False, rerank=False)
         self.assertEqual(res.status, "multi_routed")
         self.assertEqual(res.winner, "skill-a")
         self.assertEqual(
@@ -57,7 +58,7 @@ class TestMultiRouting(unittest.TestCase):
         with patch.object(
             self.client, "_call_api", side_effect=[_gate(), _stage2("skill-a", probs)]
         ):
-            res = self.client.route("Do A", SKILLS, threshold=0.6, multi=True, top_k=3)
+            res = self.client.route("Do A", SKILLS, threshold=0.6, multi=True, top_k=3, tri_gate=False, rerank=False)
         self.assertEqual(res.status, "multi_routed")
         self.assertEqual(len(res.candidates or []), 1)
 
@@ -66,7 +67,7 @@ class TestMultiRouting(unittest.TestCase):
         with patch.object(
             self.client, "_call_api", side_effect=[_gate(), _stage2("skill-a", probs)]
         ):
-            res = self.client.route("Do A", SKILLS, threshold=0.6, multi=True, top_k=3)
+            res = self.client.route("Do A", SKILLS, threshold=0.6, multi=True, top_k=3, tri_gate=False, rerank=False)
         self.assertEqual(res.status, "uncertain")
         self.assertIsNone(res.candidates)
 
@@ -75,16 +76,16 @@ class TestMultiRouting(unittest.TestCase):
         with patch.object(
             self.client, "_call_api", side_effect=[_gate(), _stage2("skill-a", probs)]
         ):
-            res = self.client.route("Do A", SKILLS, multi=False)
+            res = self.client.route("Do A", SKILLS, multi=False, tri_gate=False, rerank=False)
         self.assertEqual(res.status, "routed")
         self.assertEqual(res.winner, "skill-a")
         self.assertIsNone(res.candidates)
 
     def test_top_k_validation(self) -> None:
         with self.assertRaises(ValueError):
-            self.client.route("Do A", SKILLS, multi=True, top_k=0)
+            self.client.route("Do A", SKILLS, multi=True, top_k=0, tri_gate=False, rerank=False)
         with self.assertRaises(ValueError):
-            self.client.route("Do A", SKILLS, multi=True, top_k=11)
+            self.client.route("Do A", SKILLS, multi=True, top_k=11, tri_gate=False, rerank=False)
 
     def test_multi_with_rerank_keeps_fits_and_candidates(self) -> None:
         probs = {"skill-a": 0.70, "skill-b": 0.65, "skill-c": 0.20}
@@ -107,11 +108,38 @@ class TestMultiRouting(unittest.TestCase):
         with patch.object(
             self.client, "_call_api", side_effect=[_gate(), _stage2("skill-a", probs), rerank]
         ):
-            res = self.client.route("Do B primarily", rich, multi=True, top_k=2, rerank=True)
+            res = self.client.route("Do B primarily", rich, multi=True, top_k=2, rerank=True, tri_gate=False)
         self.assertEqual(res.status, "multi_routed")
         self.assertEqual(res.winner, "skill-b")
         self.assertIsNotNone(res.fits)
         self.assertEqual((res.candidates or [])[0]["skill"], "skill-b")
+        self.assertGreaterEqual(res.margin or 0.0, 0.0)
+
+    def test_multi_rerank_fits_veto_is_no_match(self) -> None:
+        probs = {"skill-a": 0.70, "skill-b": 0.65, "skill-c": 0.20}
+        rerank = {
+            "answers": {
+                "selected_skill": {
+                    "choice": "skill-a",
+                    "confidence": 0.80,
+                    "probabilities": {"skill-a": 0.80, "skill-b": 0.40},
+                },
+                "fits::skill-a": {"noul": 0.10},
+                "fits::skill-b": {"noul": 0.12},
+                "fits::skill-c": {"noul": 0.05},
+            }
+        }
+        rich = [
+            {**s, "description_full": s["description"], "body": f"Body for {s['name']}"}
+            for s in SKILLS
+        ]
+        with patch.object(
+            self.client, "_call_api", side_effect=[_gate(), _stage2("skill-a", probs), rerank]
+        ):
+            res = self.client.route("Do something else", rich, multi=True, top_k=2, rerank=True, tri_gate=False)
+        self.assertEqual(res.status, "no_match")
+        self.assertIsNone(res.candidates)
+        self.assertIsNone(res.winner)
 
 
 class TestMultiEngine(unittest.TestCase):
@@ -124,18 +152,18 @@ class TestMultiEngine(unittest.TestCase):
                 return 0, "ok", ""
 
         client = MagicMock()
-        client.route.return_value = {
-            "status": "multi_routed",
-            "task": "Do A and B",
-            "winner": "skill-a",
-            "probability": 0.9,
-            "threshold": 0.6,
-            "elapsed_ms": 10,
-            "candidates": [
+        client.route.return_value = RoutingResult(
+            status="multi_routed",
+            task="Do A and B",
+            winner="skill-a",
+            probability=0.9,
+            threshold=0.6,
+            elapsed_ms=10,
+            candidates=[
                 {"skill": "skill-a", "probability": 0.9},
                 {"skill": "skill-b", "probability": 0.75},
             ],
-        }
+        )
         ledger = MagicMock(spec=FilesystemLedger)
         ledger.lock.return_value.__enter__.return_value = None
         engine = RoutingEngine(client=client, executor=OkExecutor(), ledger=ledger)

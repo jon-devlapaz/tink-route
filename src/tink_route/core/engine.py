@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..metadata import load_library_skills
-from .constants import DEFAULT_THRESHOLD, FITS_THRESHOLD, MULTI_DEFAULT_TOP_K
+from ..adapters.ledger import default_ledger
+from .constants import DEFAULT_THRESHOLD, FITS_THRESHOLD, MULTI_DEFAULT_TOP_K, RESERVED_SKILLS
 from .exceptions import RoutingError, SkillValidationError
 from .models import InstallOutcome, PruneReport, RoutingResult
 from .validation import validate_skill_dir_containment
@@ -22,10 +22,9 @@ class RoutingEngine:
 
     def __init__(
         self,
-        client: Any = None,
-        executor: Any = None,
-        ledger: Any = None,
-        install_handler: Any = None,
+        client: JevRouterClient | None = None,
+        executor: SubprocessExecutor | None = None,
+        ledger: FilesystemLedger | None = None,
     ):
         if executor is None:
             from ..adapters.executor import DefaultSubprocessExecutor
@@ -34,18 +33,22 @@ class RoutingEngine:
         else:
             self.executor = executor
 
-        if ledger is None:
-            from ..adapters.ledger import FilesystemLedger
-
-            self.ledger: FilesystemLedger = FilesystemLedger()
-        else:
-            self.ledger = ledger
-
+        self.ledger: FilesystemLedger = ledger if ledger is not None else default_ledger
         self.client: JevRouterClient | None = client
-        self.install_handler = install_handler
 
     def install_skill_locked(self, skill_name: str, cwd: Path) -> InstallOutcome:
         """Execute `tink skill add -- <skill_name>` while holding ledger lock."""
+        if skill_name in RESERVED_SKILLS:
+            return InstallOutcome(
+                success=False,
+                stdout="",
+                stderr=f"Reserved skill name '{skill_name}' cannot be installed",
+                code=2,
+                skill_path=None,
+                references=[],
+                scripts=[],
+                was_pre_existing=False,
+            )
         try:
             skill_dir = validate_skill_dir_containment(cwd, skill_name)
         except SkillValidationError as e:
@@ -132,25 +135,20 @@ class RoutingEngine:
     def route(
         self,
         task: str,
-        library: Path | list[dict[str, Any]],
+        skills: list[dict[str, Any]],
         threshold: float = DEFAULT_THRESHOLD,
         install: bool = False,
         ephemeral: bool = True,
         project_dir: Path | None = None,
-        tri_gate: bool = False,
-        rerank: bool = False,
+        tri_gate: bool = True,
+        rerank: bool = True,
         fits_threshold: float = FITS_THRESHOLD,
         multi: bool = False,
         top_k: int = MULTI_DEFAULT_TOP_K,
     ) -> RoutingResult:
-        """Route task against skill library, optionally installing the winner."""
+        """Route task against an already-loaded skill library, optionally installing the winner."""
         if self.client is None:
             raise RoutingError("JevRouterClient is required for routing")
-
-        if isinstance(library, Path):
-            skills = load_library_skills(library)
-        else:
-            skills = library
 
         res = self.client.route(
             task,
@@ -162,19 +160,14 @@ class RoutingEngine:
             multi=multi,
             top_k=top_k,
         )
-        if isinstance(res, RoutingResult):
-            result = res
-        else:
-            d = dict(res)
-            if "task" not in d or not d["task"]:
-                d["task"] = task
-            result = RoutingResult(**d)
+        if not isinstance(res, RoutingResult):
+            raise RoutingError("Invalid routing result from client: expected RoutingResult")
+        result = res
 
         if result.status in ("routed", "multi_routed") and install and result.winner:
             cwd = project_dir or Path.cwd()
-            handler = self.install_handler or self.install_and_track
             try:
-                outcome = handler(result.winner, cwd, track=ephemeral)
+                outcome = self.install_and_track(result.winner, cwd, track=ephemeral)
             except Exception as exc:
                 outcome = InstallOutcome(
                     success=False,
@@ -187,22 +180,14 @@ class RoutingEngine:
                     was_pre_existing=False,
                 )
 
-            success = outcome.success if hasattr(outcome, "success") else bool(outcome.get("success", False))
-            skill_path = outcome.skill_path if hasattr(outcome, "skill_path") else outcome.get("skill_path")
-            references = list(outcome.references if hasattr(outcome, "references") else outcome.get("references", []))
-            scripts = list(outcome.scripts if hasattr(outcome, "scripts") else outcome.get("scripts", []))
-            stdout = outcome.stdout if hasattr(outcome, "stdout") else str(outcome.get("stdout", ""))
-            stderr = outcome.stderr if hasattr(outcome, "stderr") else str(outcome.get("stderr", ""))
-            tracking_error = outcome.tracking_error if hasattr(outcome, "tracking_error") else outcome.get("tracking_error")
-
-            result.installed = success
-            result.skill_path = skill_path
-            result.references = references
-            result.scripts = scripts
-            result.install_output = stdout or stderr
-            if success:
-                if tracking_error:
-                    result.tracking_error = tracking_error
+            result.installed = outcome.success
+            result.skill_path = outcome.skill_path
+            result.references = list(outcome.references) if outcome.success else []
+            result.scripts = list(outcome.scripts) if outcome.success else []
+            result.install_output = outcome.stdout or outcome.stderr
+            if outcome.success:
+                if outcome.tracking_error:
+                    result.tracking_error = outcome.tracking_error
                 else:
                     result.activation = {
                         "mode": "direct_read",
@@ -213,8 +198,9 @@ class RoutingEngine:
                         "instruction": "Read SKILL.md directly; mid-session use does not require session restart.",
                     }
             else:
-                result.install_error = stderr or "Installation failed"
+                result.install_error = outcome.stderr or "Installation failed"
         elif result.status in ("routed", "multi_routed") and not install and result.winner:
+            result.installed = False
             result.activation = {
                 "mode": "install_required",
                 "entrypoint": None,
@@ -223,6 +209,9 @@ class RoutingEngine:
                 "restart_required": False,
                 "instruction": f"Run 'tink skill add {result.winner}' to install before reading.",
             }
+
+        if result.installed is None:
+            result.installed = False
 
         return result
 

@@ -31,13 +31,13 @@ class TestPublicationBoundaries(unittest.TestCase):
                 self.client, '_call_api', side_effect=[self.need, self.choice(name)]
             ):
                 with self.assertRaisesRegex(RuntimeError, 'invalid candidate'):
-                    self.client.route('test', self.skills)
+                    self.client.route('test', self.skills, tri_gate=False, rerank=False)
 
     def test_final_reduction_rejects_eliminated_candidate(self):
         responses = [self.need, self.choice('s0'), self.choice('s24'), self.choice('s1')]
         with patch.object(self.client, '_call_api', side_effect=responses):
             with self.assertRaisesRegex(RuntimeError, 'invalid candidate'):
-                self.client.route('test', self.skills)
+                self.client.route('test', self.skills, tri_gate=False, rerank=False)
 
     def test_nonfinite_and_out_of_range_scores_rejected(self):
         for value in (float('nan'), float('inf'), -0.1, 1.1):
@@ -45,23 +45,23 @@ class TestPublicationBoundaries(unittest.TestCase):
                 self.client, '_call_api', side_effect=[self.need, self.choice('s0', value)]
             ):
                 with self.assertRaises(RuntimeError):
-                    self.client.route('test', self.skills[:1])
+                    self.client.route('test', self.skills[:1], tri_gate=False, rerank=False)
 
     def test_malformed_answers_fail_as_operational_errors(self):
         for response in (None, {'answers': None}, {'answers': {'specialist_needed': {}}}):
             with self.subTest(response=response), patch.object(self.client, '_call_api', return_value=response):
                 with self.assertRaises(RuntimeError):
-                    self.client.route('test', self.skills)
+                    self.client.route('test', self.skills, tri_gate=False, rerank=False)
         for response in ({}, {'answers': None}, {'answers': {'selected_skill': {'choice': []}}}):
             with self.subTest(response=response), patch.object(self.client, '_call_api', side_effect=[self.need, response]):
                 with self.assertRaises(RuntimeError):
-                    self.client.route('test', self.skills)
+                    self.client.route('test', self.skills, tri_gate=False, rerank=False)
 
     def test_invalid_threshold_rejected_before_api_call(self):
         with patch.object(self.client, '_call_api') as api:
             for threshold in (float('nan'), float('inf'), -1, 2):
                 with self.subTest(threshold=threshold), self.assertRaises(ValueError):
-                    self.client.route('test', self.skills, threshold)
+                    self.client.route('test', self.skills, threshold, tri_gate=False, rerank=False)
             api.assert_not_called()
 
     def test_duplicate_library_names_fail_clearly(self):
@@ -82,15 +82,16 @@ class TestPublicationBoundaries(unittest.TestCase):
     def test_dry_run_does_not_create_lock_or_tink_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.assertEqual(prune_ephemeral_skills(root, dry_run=True)['count'], 0)
+            self.assertEqual(prune_ephemeral_skills(root, dry_run=True).count, 0)
             self.assertEqual(list(root.iterdir()), [])
 
     def test_install_and_prune_cannot_interleave_before_recording(self):
         import threading
         from concurrent.futures import ThreadPoolExecutor
         from subprocess import CompletedProcess
-        from tink_route.cli import _install_and_track
-        from tink_route.ephemeral import _record_ephemeral_skill_locked, load_ephemeral_skills
+        from tink_route.adapters.ledger import FilesystemLedger
+        from tink_route.cli import _DEFAULT_ENGINE
+        from tink_route.ephemeral import load_ephemeral_skills
 
         recording = threading.Event()
         release = threading.Event()
@@ -109,20 +110,22 @@ class TestPublicationBoundaries(unittest.TestCase):
                     skill.unlink()
                 return CompletedProcess(args, 0, '', '')
 
-            def record(project, name):
+            original = FilesystemLedger.record_ephemeral_skill_locked
+
+            def record(self, project, name):
                 recording.set()
                 if not release.wait(3):
                     raise TimeoutError('test did not release recording')
-                _record_ephemeral_skill_locked(project, name)
+                return original(self, project, name)
 
             def prune():
                 pruning.set()
                 return prune_ephemeral_skills(root)
 
-            with patch('subprocess.run', side_effect=tink), patch(
-                'tink_route.cli._record_ephemeral_skill_locked', side_effect=record
+            with patch('subprocess.run', side_effect=tink), patch.object(
+                FilesystemLedger, 'record_ephemeral_skill_locked', record
             ), ThreadPoolExecutor(max_workers=2) as pool:
-                installer = pool.submit(_install_and_track, 'test', root, True)
+                installer = pool.submit(_DEFAULT_ENGINE.install_and_track, 'test', root, True)
                 try:
                     self.assertTrue(recording.wait(2))
                     pruner = pool.submit(prune)
@@ -131,16 +134,16 @@ class TestPublicationBoundaries(unittest.TestCase):
                     self.assertFalse(pruner.done())
                 finally:
                     release.set()
-                self.assertTrue(installer.result(timeout=3)['success'])
-                self.assertEqual(pruner.result(timeout=3)['pruned'], ['test'])
+                self.assertTrue(installer.result(timeout=3).success)
+                self.assertEqual(pruner.result(timeout=3).pruned, ['test'])
             self.assertFalse(skill.exists())
             self.assertEqual(load_ephemeral_skills(root), [])
 
     def test_unsupported_lock_backend_fails_before_install(self):
-        from tink_route.cli import _install_and_track
+        from tink_route.cli import _DEFAULT_ENGINE
         with tempfile.TemporaryDirectory() as tmp, patch(
-            'tink_route.ephemeral.fcntl', None
-        ), patch('tink_route.ephemeral.msvcrt', None), patch('subprocess.run') as tink:
+            'tink_route.adapters.ledger.fcntl', None
+        ), patch('tink_route.adapters.ledger.msvcrt', None), patch('subprocess.run') as tink:
             with self.assertRaisesRegex(RuntimeError, 'No supported file-locking'):
-                _install_and_track('test', Path(tmp), True)
+                _DEFAULT_ENGINE.install_and_track('test', Path(tmp), True)
             tink.assert_not_called()
