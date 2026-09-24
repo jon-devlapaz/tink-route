@@ -8,9 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tink_route.client import JevRouterClient
+from tink_route.adapters.client import JevRouterClient
 from tink_route.cli import main
-from tink_route.ephemeral import prune_ephemeral_skills
+from tink_route.adapters.ledger import default_ledger
 from tink_route.metadata import load_library_skills
 
 
@@ -82,7 +82,7 @@ class TestPublicationBoundaries(unittest.TestCase):
     def test_dry_run_does_not_create_lock_or_tink_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.assertEqual(prune_ephemeral_skills(root, dry_run=True).count, 0)
+            self.assertEqual(default_ledger.prune(root, dry_run=True).count, 0)
             self.assertEqual(list(root.iterdir()), [])
 
     def test_install_and_prune_cannot_interleave_before_recording(self):
@@ -91,7 +91,7 @@ class TestPublicationBoundaries(unittest.TestCase):
         from subprocess import CompletedProcess
         from tink_route.adapters.ledger import FilesystemLedger
         from tink_route.cli import _DEFAULT_ENGINE
-        from tink_route.ephemeral import load_ephemeral_skills
+        from tink_route.adapters.ledger import default_ledger as ledger
 
         recording = threading.Event()
         release = threading.Event()
@@ -120,7 +120,7 @@ class TestPublicationBoundaries(unittest.TestCase):
 
             def prune():
                 pruning.set()
-                return prune_ephemeral_skills(root)
+                return ledger.prune(root)
 
             with patch('subprocess.run', side_effect=tink), patch.object(
                 FilesystemLedger, 'record_ephemeral_skill_locked', record
@@ -137,7 +137,7 @@ class TestPublicationBoundaries(unittest.TestCase):
                 self.assertTrue(installer.result(timeout=3).success)
                 self.assertEqual(pruner.result(timeout=3).pruned, ['test'])
             self.assertFalse(skill.exists())
-            self.assertEqual(load_ephemeral_skills(root), [])
+            self.assertEqual(ledger.load_ephemeral_skills(root), [])
 
     def test_unsupported_lock_backend_fails_before_install(self):
         from tink_route.cli import _DEFAULT_ENGINE

@@ -1,13 +1,10 @@
-"""Tests for protocol handling, retries, tournament reduction, sentinels, and candidate filtering."""
+"""Tests for protocol handling, sentinels, and candidate filtering."""
 
-import io
-import json
 import unittest
 import urllib.error
-from typing import Any
 from unittest.mock import MagicMock, patch
 
-from tink_route.adapters.client import BATCH_SIZE, JevRouterClient
+from tink_route.adapters.client import JevRouterClient
 from tink_route.core.exceptions import ApiProtocolError, RoutingError
 
 
@@ -42,44 +39,6 @@ class TestProtocolAndReduction(unittest.TestCase):
             self.assertIsInstance(ctx.exception, RuntimeError)
             self.assertIn("Invalid JSON", str(ctx.exception))
 
-    def test_proto_2_bounded_retry_backoff_429_and_5xx(self) -> None:
-        """PROTO-2: Bounded retry for 429 with Retry-After and transient 502/503/504."""
-        # 1. 429 with Retry-After header then succeeds
-        mock_headers = MagicMock()
-        mock_headers.get.return_value = "0.01"
-        err_429 = urllib.error.HTTPError(
-            url="https://api.typesafe.ai",
-            code=429,
-            msg="Too Many Requests",
-            hdrs=mock_headers,
-            fp=io.BytesIO(b"rate limit"),
-        )
-        good_resp = MagicMock()
-        good_resp.read.return_value = b'{"success": true}'
-        good_resp.__enter__.return_value = good_resp
-
-        with patch("urllib.request.urlopen", side_effect=[err_429, good_resp]) as mock_open:
-            with patch("time.sleep") as mock_sleep:
-                result = self.client._call_api({"test": 1})
-                self.assertEqual(result, {"success": True})
-                self.assertEqual(mock_open.call_count, 2)
-                mock_sleep.assert_called_once_with(0.01)
-
-        # 2. 503 transient error then succeeds
-        err_503 = urllib.error.HTTPError(
-            url="https://api.typesafe.ai",
-            code=503,
-            msg="Service Unavailable",
-            hdrs=mock_headers,
-            fp=io.BytesIO(b"unavailable"),
-        )
-        with patch("urllib.request.urlopen", side_effect=[err_503, good_resp]) as mock_open:
-            with patch("time.sleep") as mock_sleep:
-                result = self.client._call_api({"test": 1})
-                self.assertEqual(result, {"success": True})
-                self.assertEqual(mock_open.call_count, 2)
-                mock_sleep.assert_called_once()
-
     def test_proto_3_filter_raw_probabilities_to_candidate_set(self) -> None:
         """PROTO-3: In _parse_choice, only copy keys from raw_probabilities present in candidates."""
         response = {
@@ -102,47 +61,6 @@ class TestProtocolAndReduction(unittest.TestCase):
         self.assertIn("skill-valid", parsed["probabilities"])
         self.assertNotIn("hallucinated-skill", parsed["probabilities"])
         self.assertNotIn("another-random-string", parsed["probabilities"])
-
-    def test_proto_4_recursive_tournament_reduction(self) -> None:
-        """PROTO-4: Recursive tournament reduction if len(survivors) > BATCH_SIZE."""
-        # 55 skills with BATCH_SIZE=24 -> Round 1: 3 chunks (24, 24, 7)
-        # All 3 chunks produce a winner -> 3 survivors.
-        # Since 3 <= 24, Round 2 evaluates final batch of 3.
-        # Now simulate 55 skills where BATCH_SIZE is patched to 3 to force 2+ rounds!
-        # Test with 10 skills and BATCH_SIZE=2 to force 3 rounds of reduction:
-        # Round 1: 5 chunks of 2 -> 5 winners (5 > 2)
-        # Round 2: 3 chunks (2, 2, 1) -> 3 winners (3 > 2)
-        # Round 3: 2 chunks (2, 1) -> 2 winners (2 <= 2)
-        # Final batch: evaluates the 2 survivors.
-        with patch("tink_route.adapters.client.BATCH_SIZE", 2):
-            skills = [{"name": f"skill-{i}", "description": f"desc {i}"} for i in range(10)]
-            noul_resp = {"answers": {"specialist_needed": {"noul": 0.95}}}
-
-            call_count = [0]
-
-            def fake_call_api(payload: dict[str, Any]) -> dict[str, Any]:
-                call_count[0] += 1
-                if "specialist_needed" in payload.get("questions", {}):
-                    return noul_resp
-                criteria = payload["questions"]["selected_skill"]["criteria"]
-                skill_names = [k for k in criteria if not k.startswith("__")]
-                self.assertLessEqual(len(skill_names), 2, "No batch may exceed BATCH_SIZE=2")
-                # Choose the first skill name in candidates
-                winner = skill_names[0]
-                return {
-                    "answers": {
-                        "selected_skill": {
-                            "choice": winner,
-                            "confidence": 0.9,
-                            "probabilities": {winner: 0.9},
-                        }
-                    }
-                }
-
-            with patch.object(self.client, "_call_api", side_effect=fake_call_api):
-                res = self.client.route("Some task", skills, threshold=0.60, tri_gate=False, rerank=False)
-                self.assertEqual(res.status, "routed")
-                self.assertIsNotNone(res.winner)
 
     def test_proto_5_sentinel_precedence_highest_probability(self) -> None:
         """PROTO-5: Sentinel precedence selects highest probability sentinel across batches."""

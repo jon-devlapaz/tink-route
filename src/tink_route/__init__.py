@@ -4,7 +4,7 @@ __version__ = "0.5.2"
 
 from .adapters.client import JevRouterClient
 from .adapters.executor import DefaultSubprocessExecutor, SubprocessExecutor
-from .adapters.ledger import FilesystemLedger
+from .adapters.ledger import FilesystemLedger, default_ledger
 from .cli import main
 from .core.engine import RoutingEngine
 from .core.exceptions import (
@@ -18,12 +18,11 @@ from .core.exceptions import (
 )
 from .core.models import InstallOutcome, PruneReport, RoutingResult
 from .core.validation import is_valid_skill_name, validate_skill_dir_containment
-from .ephemeral import (
-    load_ephemeral_skills,
-    prune_ephemeral_skills,
-    record_ephemeral_skill,
-)
 from .metadata import load_library_skills, parse_skill_metadata
+
+load_ephemeral_skills = default_ledger.load_ephemeral_skills
+record_ephemeral_skill = default_ledger.record_ephemeral_skill
+prune_ephemeral_skills = default_ledger.prune
 
 __all__ = [
     "__version__",

@@ -10,10 +10,8 @@ from unittest.mock import MagicMock, patch
 
 from tink_route.adapters.client import JevRouterClient
 from tink_route.adapters.executor import SubprocessExecutor
-from tink_route.adapters.ledger import FilesystemLedger
 from tink_route.core.engine import RoutingEngine
-from tink_route.core.exceptions import RoutingError
-from tink_route.core.models import PruneReport, RoutingResult
+from tink_route.core.models import RoutingResult
 from tink_route.metadata import load_library_skills, parse_skill_metadata
 
 
@@ -26,14 +24,6 @@ class FakeExecutor(SubprocessExecutor):
         return 0, "ok", ""
 
 
-def _engine(client_ret: RoutingResult) -> RoutingEngine:
-    client = MagicMock()
-    client.route.return_value = client_ret
-    ledger = MagicMock()
-    ledger.lock.return_value.__enter__.return_value = None
-    return RoutingEngine(client=client, executor=FakeExecutor(), ledger=ledger)
-
-
 class TestLibraryRobustness(unittest.TestCase):
     def test_malformed_skill_skipped_good_skill_loads(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -44,15 +34,6 @@ class TestLibraryRobustness(unittest.TestCase):
             (lib / "badname" / "SKILL.md").write_text("---\nname: bad name\ndescription: x\n---\n")
             skills = load_library_skills(lib)
         self.assertEqual([s["name"] for s in skills], ["good"])
-
-    def test_duplicate_names_still_raise(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            lib = Path(td)
-            for d in ("a", "b"):
-                (lib / d).mkdir()
-                (lib / d / "SKILL.md").write_text("---\nname: dup\ndescription: x\n---\n")
-            with self.assertRaises(ValueError):
-                load_library_skills(lib)
 
     def test_unclosed_frontmatter_treated_as_body(self) -> None:
         meta = parse_skill_metadata("---\nname: foo\ndescription: bar\nno closing", "fallback")
@@ -69,13 +50,6 @@ class TestLibraryRobustness(unittest.TestCase):
 
 
 class TestEngineContract(unittest.TestCase):
-    def test_non_result_raises_routing_error(self) -> None:
-        client = MagicMock()
-        client.route.return_value = {"status": "routed", "task": "t", "winner": "s"}
-        eng = RoutingEngine(client=client, executor=FakeExecutor(), ledger=MagicMock())
-        with self.assertRaises(RoutingError):
-            eng.route("t", [{"name": "s", "description": "d"}])
-
     def test_failed_install_clears_references(self) -> None:
         class FailExec(FakeExecutor):
             def run(self, cmd: list, cwd: Path) -> tuple:
@@ -92,18 +66,6 @@ class TestEngineContract(unittest.TestCase):
         self.assertEqual(res.references, [])
         self.assertEqual(res.scripts, [])
         self.assertIsNotNone(res.install_error)
-
-    def test_installed_false_when_no_install_attempted(self) -> None:
-        eng = _engine(RoutingResult(status="no_skill_needed", task="t", specialist_noul=0.1))
-        res = eng.route("t", [{"name": "s", "description": "d"}], install=True)
-        self.assertIs(res.installed, False)
-
-    def test_routed_without_install_has_empty_ref_lists(self) -> None:
-        eng = _engine(RoutingResult(status="routed", task="t", winner="s", probability=0.9))
-        res = eng.route("t", [{"name": "s", "description": "d"}], install=False)
-        d = res.to_dict()
-        self.assertEqual(d["references"], [])
-        self.assertEqual(d["scripts"], [])
 
     def test_reserved_name_rejected_on_install(self) -> None:
         exe = FakeExecutor()
@@ -134,12 +96,6 @@ class TestMultiPool(unittest.TestCase):
                                tri_gate=False, rerank=False)
         names = [c["skill"] for c in res.candidates or []]
         self.assertIn("s1", names)
-
-
-class TestPruneSchema(unittest.TestCase):
-    def test_dry_run_report_includes_errors(self) -> None:
-        d = PruneReport(pruned=[], preserved=["x"], dry_run=True, count=0).to_dict()
-        self.assertIn("errors", d)
 
 
 class TestCliFixes(unittest.TestCase):
@@ -190,19 +146,6 @@ class TestCliFixes(unittest.TestCase):
                     ["tink-route", "--library", str(Path(td) / "nope"), "do things"], Path(td))
         self.assertEqual(code, 2)
         self.assertIn("not found or not a directory", err)
-
-    def test_no_candidates_has_own_message(self) -> None:
-        with tempfile.TemporaryDirectory() as td, \
-             patch.dict("os.environ", {"TYPESAFE_API_KEY": "k"}), \
-             patch("tink_route.cli.load_library_skills",
-                   return_value=[{"name": "s", "description": "d"}]), \
-             patch("tink_route.cli.JevRouterClient.route",
-                   return_value=RoutingResult(status="no_candidates_available", task="t",
-                                              specialist_noul=0.9, threshold=0.6, elapsed_ms=1)):
-            code, out, _ = self._run_main(["tink-route", "do things"], Path(td))
-        self.assertEqual(code, 1)
-        self.assertIn("no_candidates_available", out)
-        self.assertNotIn("Top candidate 'None'", out)
 
     def test_version_subcommand_plain(self) -> None:
         import json

@@ -2,6 +2,7 @@
 
 DEFAULT_MODEL = "jev-1.13.0"
 DEFAULT_THRESHOLD = 0.60
+GATE_ABSTAIN = 0.30
 TYPESAFE_API_URL = "https://api.typesafe.ai/v1/systemone"
 BATCH_SIZE = 24
 

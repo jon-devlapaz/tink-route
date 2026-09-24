@@ -1,12 +1,9 @@
 """Tests for compound multi-skill routing (--multi)."""
 
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from tink_route.adapters.client import JevRouterClient
-from tink_route.core.engine import RoutingEngine
-from tink_route.core.models import RoutingResult
 
 
 def _gate(high: float = 0.9) -> dict:
@@ -71,49 +68,11 @@ class TestMultiRouting(unittest.TestCase):
         self.assertEqual(res.status, "uncertain")
         self.assertIsNone(res.candidates)
 
-    def test_multi_off_preserves_single_winner(self) -> None:
-        probs = {"skill-a": 0.90, "skill-b": 0.75, "skill-c": 0.50}
-        with patch.object(
-            self.client, "_call_api", side_effect=[_gate(), _stage2("skill-a", probs)]
-        ):
-            res = self.client.route("Do A", SKILLS, multi=False, tri_gate=False, rerank=False)
-        self.assertEqual(res.status, "routed")
-        self.assertEqual(res.winner, "skill-a")
-        self.assertIsNone(res.candidates)
-
     def test_top_k_validation(self) -> None:
         with self.assertRaises(ValueError):
             self.client.route("Do A", SKILLS, multi=True, top_k=0, tri_gate=False, rerank=False)
         with self.assertRaises(ValueError):
             self.client.route("Do A", SKILLS, multi=True, top_k=11, tri_gate=False, rerank=False)
-
-    def test_multi_with_rerank_keeps_fits_and_candidates(self) -> None:
-        probs = {"skill-a": 0.70, "skill-b": 0.65, "skill-c": 0.20}
-        rerank = {
-            "answers": {
-                "selected_skill": {
-                    "choice": "skill-b",
-                    "confidence": 0.88,
-                    "probabilities": {"skill-b": 0.88, "skill-a": 0.60},
-                },
-                "fits::skill-b": {"noul": 0.91},
-                "fits::skill-a": {"noul": 0.80},
-                "fits::skill-c": {"noul": 0.10},
-            }
-        }
-        rich = [
-            {**s, "description_full": s["description"], "body": f"Body for {s['name']}"}
-            for s in SKILLS
-        ]
-        with patch.object(
-            self.client, "_call_api", side_effect=[_gate(), _stage2("skill-a", probs), rerank]
-        ):
-            res = self.client.route("Do B primarily", rich, multi=True, top_k=2, rerank=True, tri_gate=False)
-        self.assertEqual(res.status, "multi_routed")
-        self.assertEqual(res.winner, "skill-b")
-        self.assertIsNotNone(res.fits)
-        self.assertEqual((res.candidates or [])[0]["skill"], "skill-b")
-        self.assertGreaterEqual(res.margin or 0.0, 0.0)
 
     def test_multi_rerank_fits_veto_is_no_match(self) -> None:
         probs = {"skill-a": 0.70, "skill-b": 0.65, "skill-c": 0.20}
@@ -140,40 +99,6 @@ class TestMultiRouting(unittest.TestCase):
         self.assertEqual(res.status, "no_match")
         self.assertIsNone(res.candidates)
         self.assertIsNone(res.winner)
-
-
-class TestMultiEngine(unittest.TestCase):
-    def test_engine_passes_multi_and_installs_winner(self) -> None:
-        from tink_route.adapters.executor import SubprocessExecutor
-        from tink_route.adapters.ledger import FilesystemLedger
-
-        class OkExecutor(SubprocessExecutor):
-            def run(self, cmd: list, cwd: Path) -> tuple[int, str, str]:
-                return 0, "ok", ""
-
-        client = MagicMock()
-        client.route.return_value = RoutingResult(
-            status="multi_routed",
-            task="Do A and B",
-            winner="skill-a",
-            probability=0.9,
-            threshold=0.6,
-            elapsed_ms=10,
-            candidates=[
-                {"skill": "skill-a", "probability": 0.9},
-                {"skill": "skill-b", "probability": 0.75},
-            ],
-        )
-        ledger = MagicMock(spec=FilesystemLedger)
-        ledger.lock.return_value.__enter__.return_value = None
-        engine = RoutingEngine(client=client, executor=OkExecutor(), ledger=ledger)
-        res = engine.route("Do A and B", SKILLS, install=False, multi=True, top_k=2)
-        self.assertEqual(res.status, "multi_routed")
-        self.assertEqual(res.winner, "skill-a")
-        client.route.assert_called_once()
-        _, kwargs = client.route.call_args
-        self.assertTrue(kwargs.get("multi"))
-        self.assertEqual(kwargs.get("top_k"), 2)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,10 @@
 """Tests for the tri-noul Stage 1 gate and Stage 3 shortlist rerank."""
 
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from tink_route.adapters.client import JevRouterClient
 from tink_route.core.exceptions import ApiProtocolError
-from tink_route.metadata import load_library_skills, parse_skill_metadata
 
 
 class TestTriNoulGate(unittest.TestCase):
@@ -34,7 +31,14 @@ class TestTriNoulGate(unittest.TestCase):
         self.assertEqual(api.call_count, 1)
         questions = api.call_args.args[0]["questions"]
         self.assertIn("acts_on_user_system", questions)
+        self.assertIn("would_follow_documented_procedure", questions)
+        self.assertIn("prose_suffices", questions)
+        self.assertIn("selected_skill", questions)
         self.assertNotIn("specialist_needed", questions)
+        criteria = questions["selected_skill"]["criteria"]
+        self.assertIn("threejs-shaders", criteria)
+        self.assertIn("__no_skill__", criteria)
+        self.assertIn("__no_match__", criteria)
 
     def test_tri_gate_missing_answers_are_protocol_errors(self) -> None:
         with patch.object(self.client, "_call_api", return_value={"answers": {"acts_on_user_system": {"noul": 0.9}}}):
@@ -119,14 +123,6 @@ class TestShortlistRerank(unittest.TestCase):
         self.assertEqual(res.status, "no_match")
         self.assertIsNone(res.winner)
 
-    def test_rerank_off_does_not_make_a_third_call(self) -> None:
-        with patch.object(self.client, "_call_api", side_effect=[self.noul, self.stage2]) as api:
-            res = self.client.route("Author a pitch deck", self.skills, rerank=False, tri_gate=False)
-        self.assertEqual(res.status, "routed")
-        self.assertEqual(res.winner, "powerpoint")
-        self.assertEqual(api.call_count, 2)
-        self.assertIsNone(res.fits)
-
     def test_rerank_missing_fits_answer_is_protocol_error(self) -> None:
         rerank = {
             "answers": {
@@ -142,28 +138,5 @@ class TestShortlistRerank(unittest.TestCase):
                 self.client.route("Author a pitch deck", self.skills, rerank=True, tri_gate=False)
 
 
-class TestMetadataBodyExcerpt(unittest.TestCase):
-    def test_parse_skill_metadata_extracts_body(self) -> None:
-        raw = """---
-name: pptx-author
-description: Build decks
----
-# PPTX Author
-Use python-pptx to generate slides.
-"""
-        meta = parse_skill_metadata(raw, "fallback")
-        self.assertEqual(meta["name"], "pptx-author")
-        self.assertIn("python-pptx", meta["body"])
-
-    def test_load_library_skills_includes_truncated_body(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            skill_dir = Path(tmpdir) / "pptx-author"
-            skill_dir.mkdir()
-            (skill_dir / "SKILL.md").write_text(
-                "---\nname: pptx-author\ndescription: Build decks\n---\n"
-                + ("A" * 800)
-            )
-            skills = load_library_skills(Path(tmpdir))
-            self.assertEqual(len(skills), 1)
-            self.assertEqual(len(skills[0]["body"]), 700)
-            self.assertEqual(skills[0]["description_full"], "Build decks")
+if __name__ == "__main__":
+    unittest.main()

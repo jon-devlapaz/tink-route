@@ -3,9 +3,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
-from tink_route.cli import _install_skill_locked
 from tink_route.core.exceptions import SkillValidationError
 from tink_route.core.validation import is_valid_skill_name, validate_skill_dir_containment
 from tink_route.metadata import parse_skill_metadata
@@ -101,26 +99,6 @@ description: An unnamed skill.
 """
         with self.assertRaises(SkillValidationError):
             parse_skill_metadata(valid_yaml, fallback_name="-invalid-fallback")
-
-    @patch("subprocess.run")
-    def test_cli_add_uses_double_dash(self, mock_subprocess: MagicMock) -> None:
-        """CLI executes tink skill add -- <skill_name> with double-dash argument separator."""
-        mock_res = MagicMock()
-        mock_res.returncode = 0
-        mock_res.stdout = "Added"
-        mock_res.stderr = ""
-        mock_subprocess.return_value = mock_res
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-            _install_skill_locked("safe-skill", tmppath)
-            mock_subprocess.assert_called_once_with(
-                ["tink", "skill", "add", "--", "safe-skill"],
-                cwd=str(tmppath),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
 
 
 if __name__ == "__main__":

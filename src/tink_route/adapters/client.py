@@ -13,6 +13,7 @@ from ..core.constants import (
     DEFAULT_MODEL,
     DEFAULT_THRESHOLD,
     FITS_THRESHOLD,
+    GATE_ABSTAIN,
     GATE_QUESTIONS,
     MULTI_DEFAULT_TOP_K,
     MULTI_MAX_TOP_K,
@@ -243,17 +244,26 @@ class JevRouterClient:
         parsed["fits"] = fits
         return parsed
 
-    def _specialist_score(self, task: str, *, tri: bool) -> float:
-        if tri:
-            questions: dict[str, Any] = {
-                q_name: {"type": "noul", "instructions": q_instructions}
-                for q_name, q_instructions in GATE_QUESTIONS.items()
-            }
+    def _specialist_score(
+        self,
+        task: str,
+        *,
+        tri: bool,
+        response: dict[str, Any] | None = None,
+    ) -> float:
+        if response is None:
+            if tri:
+                questions: dict[str, Any] = {
+                    q_name: {"type": "noul", "instructions": q_instructions}
+                    for q_name, q_instructions in GATE_QUESTIONS.items()
+                }
+            else:
+                questions = {
+                    "specialist_needed": {"type": "noul", "instructions": NEED_INSTRUCTIONS},
+                }
+            resp = self._call_api({"model": self.model, "state": {"task": task}, "questions": questions})
         else:
-            questions = {
-                "specialist_needed": {"type": "noul", "instructions": NEED_INSTRUCTIONS},
-            }
-        resp = self._call_api({"model": self.model, "state": {"task": task}, "questions": questions})
+            resp = response
         answers = resp.get("answers") if isinstance(resp, dict) else None
         if not isinstance(answers, dict):
             raise ApiProtocolError(f"Invalid API response from TypeSafe: missing answers: {resp}")
@@ -303,32 +313,69 @@ class JevRouterClient:
             ranked=ranked,
         )
 
-    def _evaluate_batch(self, task: str, candidates: list[dict[str, str]]) -> dict[str, Any]:
+    def _evaluate_batch(
+        self,
+        task: str,
+        candidates: list[dict[str, str]],
+        *,
+        include_gate: bool = False,
+    ) -> dict[str, Any]:
         criteria = {c["name"]: c["description"] for c in candidates}
         criteria[NO_SKILL_SENTINEL] = "Standard coding tools, simple edits, or general explanations suffice."
         criteria[NO_MATCH_SENTINEL] = "None of the available candidate skills match the requested workflow."
+        questions: dict[str, Any] = {
+            "selected_skill": {
+                "type": "choice",
+                "instructions": RANK_INSTRUCTIONS,
+                "criteria": criteria,
+            }
+        }
+        if include_gate:
+            for q_name, q_instructions in GATE_QUESTIONS.items():
+                questions[q_name] = {"type": "noul", "instructions": q_instructions}
         return self._call_api(
             {
                 "model": self.model,
                 "state": {"task": task},
-                "questions": {
-                    "selected_skill": {
-                        "type": "choice",
-                        "instructions": RANK_INSTRUCTIONS,
-                        "criteria": criteria,
-                    }
-                },
+                "questions": questions,
             }
         )
 
-    def _rank_library(self, task: str, skills: list[dict[str, str]]) -> Ranking:
-        """Stage 2. Returns a Ranking whose pool holds every non-sentinel score seen."""
+    def _rank_library(
+        self,
+        task: str,
+        skills: list[dict[str, str]],
+        *,
+        tri_gate: bool = False,
+    ) -> tuple[Ranking | None, float | None]:
+        """Stage 2. Returns a Ranking whose pool holds every non-sentinel score seen.
+
+        When tri_gate is set, the first batch also carries the gate nouls. A gate
+        under GATE_ABSTAIN returns (None, score) and does not parse the choice.
+        """
         pool: dict[str, float] = {}
+        gate_score: float | None = None
+        attach_gate = tri_gate
+
+        def take(candidates: list[dict[str, str]]) -> dict[str, Any] | None:
+            nonlocal attach_gate, gate_score
+            resp = self._evaluate_batch(task, candidates, include_gate=attach_gate)
+            if attach_gate:
+                attach_gate = False
+                gate_score = self._specialist_score(task, tri=True, response=resp)
+                if gate_score < GATE_ABSTAIN:
+                    return None
+            return self._parse_choice(
+                resp,
+                {s["name"] for s in candidates} | set(_SENTINELS),
+            )
+
         if len(skills) <= BATCH_SIZE:
-            valid = {s["name"] for s in skills} | set(_SENTINELS)
-            parsed = self._parse_choice(self._evaluate_batch(task, skills), valid)
+            parsed = take(skills)
+            if parsed is None:
+                return None, gate_score
             self._remember_pool(pool, parsed["probabilities"])
-            return self._ranking(parsed, pool)
+            return self._ranking(parsed, pool), gate_score
 
         current_skills: list[dict[str, str]] = list(skills)
         sentinel_batches: list[dict[str, Any]] = []
@@ -336,10 +383,9 @@ class JevRouterClient:
             round_winners: list[dict[str, Any]] = []
             for i in range(0, len(current_skills), BATCH_SIZE):
                 chunk = current_skills[i : i + BATCH_SIZE]
-                parsed = self._parse_choice(
-                    self._evaluate_batch(task, chunk),
-                    {s["name"] for s in chunk} | set(_SENTINELS),
-                )
+                parsed = take(chunk)
+                if parsed is None:
+                    return None, gate_score
                 self._remember_pool(pool, parsed["probabilities"])
                 if parsed["winner"] not in _SENTINELS:
                     matching = [s for s in chunk if s["name"] == parsed["winner"]]
@@ -350,23 +396,22 @@ class JevRouterClient:
 
             if not round_winners:
                 best = max(sentinel_batches, key=lambda item: float(item["probability"]))
-                return self._ranking(best, pool)
+                return self._ranking(best, pool), gate_score
             if len(round_winners) == 1:
-                return self._ranking(round_winners[0]["parsed"], pool)
+                return self._ranking(round_winners[0]["parsed"], pool), gate_score
 
             survivor_skills = [rw["skill"] for rw in round_winners]
             if len(survivor_skills) > BATCH_SIZE:
                 current_skills = survivor_skills
                 continue
 
-            parsed = self._parse_choice(
-                self._evaluate_batch(task, survivor_skills),
-                {s["name"] for s in survivor_skills} | set(_SENTINELS),
-            )
+            parsed = take(survivor_skills)
+            if parsed is None:
+                return None, gate_score
             for name, score in parsed["probabilities"].items():
                 if name not in _SENTINELS:
                     pool[name] = float(score)
-            return self._ranking(parsed, pool)
+            return self._ranking(parsed, pool), gate_score
 
     def _apply_rerank(
         self,
@@ -402,8 +447,17 @@ class JevRouterClient:
         )
         if winner not in _SENTINELS:
             winner_fit = fits.get(winner, 0.0)
-            max_fit = max(fits.values()) if fits else 0.0
-            if max_fit < fits_threshold or winner_fit < fits_threshold:
+            best_fit_name = max(fits, key=fits.get) if fits else None
+            best_fit = fits.get(best_fit_name, 0.0) if best_fit_name else 0.0
+            runner_up_p = ranked[1][1] if len(ranked) > 1 else 0.0
+            decisive = probability >= 0.85 and (probability - runner_up_p) >= 0.25
+            lookalike = (
+                best_fit_name is not None
+                and best_fit_name != winner
+                and best_fit >= fits_threshold
+                and best_fit > winner_fit
+            )
+            if lookalike or (not decisive and winner_fit < fits_threshold):
                 winner = NO_MATCH_SENTINEL
                 probability = 0.0
         return Ranking(
@@ -521,26 +575,57 @@ class JevRouterClient:
             raise ValueError(f"top_k must be an integer between 1 and {MULTI_MAX_TOP_K}")
 
         start_time = time.monotonic()
-        specialist_noul = self._specialist_score(task, tri=tri_gate)
-        elapsed_ms = int((time.monotonic() - start_time) * 1000)
-        if specialist_noul < threshold:
-            return RoutingResult(
-                status="no_skill_needed",
-                task=task,
-                specialist_noul=specialist_noul,
-                threshold=threshold,
-                elapsed_ms=elapsed_ms,
-            )
-        if not skills:
-            return RoutingResult(
-                status="no_candidates_available",
-                task=task,
-                specialist_noul=specialist_noul,
-                threshold=threshold,
-                elapsed_ms=elapsed_ms,
-            )
+        if tri_gate:
+            if not skills:
+                resp = self._evaluate_batch(task, [], include_gate=True)
+                specialist_noul = self._specialist_score(task, tri=True, response=resp)
+                elapsed_ms = int((time.monotonic() - start_time) * 1000)
+                if specialist_noul < GATE_ABSTAIN:
+                    return RoutingResult(
+                        status="no_skill_needed",
+                        task=task,
+                        specialist_noul=specialist_noul,
+                        threshold=threshold,
+                        elapsed_ms=elapsed_ms,
+                    )
+                return RoutingResult(
+                    status="no_candidates_available",
+                    task=task,
+                    specialist_noul=specialist_noul,
+                    threshold=threshold,
+                    elapsed_ms=elapsed_ms,
+                )
+            ranking, specialist_noul = self._rank_library(task, skills, tri_gate=True)
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            if ranking is None:
+                return RoutingResult(
+                    status="no_skill_needed",
+                    task=task,
+                    specialist_noul=specialist_noul,
+                    threshold=threshold,
+                    elapsed_ms=elapsed_ms,
+                )
+        else:
+            specialist_noul = self._specialist_score(task, tri=False)
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            if specialist_noul < threshold:
+                return RoutingResult(
+                    status="no_skill_needed",
+                    task=task,
+                    specialist_noul=specialist_noul,
+                    threshold=threshold,
+                    elapsed_ms=elapsed_ms,
+                )
+            if not skills:
+                return RoutingResult(
+                    status="no_candidates_available",
+                    task=task,
+                    specialist_noul=specialist_noul,
+                    threshold=threshold,
+                    elapsed_ms=elapsed_ms,
+                )
+            ranking, _gate = self._rank_library(task, skills)
 
-        ranking = self._rank_library(task, skills)
         if rerank:
             ranking = self._apply_rerank(task, ranking, skills, fits_threshold)
         elapsed_ms = int((time.monotonic() - start_time) * 1000)

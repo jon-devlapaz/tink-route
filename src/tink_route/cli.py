@@ -10,7 +10,7 @@ from typing import Optional
 from . import __version__
 from .adapters.executor import DefaultSubprocessExecutor
 from .adapters.ledger import default_ledger
-from .client import DEFAULT_MODEL, DEFAULT_THRESHOLD, JevRouterClient
+from .adapters.client import DEFAULT_MODEL, DEFAULT_THRESHOLD, JevRouterClient
 from .core.constants import FITS_THRESHOLD, MULTI_DEFAULT_TOP_K
 from .core.engine import RoutingEngine
 from .core.models import InstallOutcome, RoutingResult
