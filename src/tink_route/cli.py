@@ -97,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--tri-gate",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Use three orthogonal Stage 1 noul questions instead of a single specialist gate (default: true).",
+        help="Ask the specialised-workflow gate on the first ranking call (default: true).",
     )
     parser.add_argument(
         "--rerank",

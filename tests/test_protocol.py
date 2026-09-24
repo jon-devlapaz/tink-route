@@ -66,7 +66,7 @@ class TestProtocolAndReduction(unittest.TestCase):
         """PROTO-5: Sentinel precedence selects highest probability sentinel across batches."""
         # 25 skills -> 2 batches
         skills = [{"name": f"skill-{i}", "description": f"desc {i}"} for i in range(25)]
-        noul_resp = {"answers": {"specialist_needed": {"noul": 0.90}}}
+        noul_resp = {"answers": {"specialised_workflow": {"noul": 0.90}}}
 
         # Batch 1 returns __no_skill__ with p=0.98
         resp_b1 = {
@@ -99,7 +99,7 @@ class TestProtocolAndReduction(unittest.TestCase):
     def test_proto_6_track_global_top_candidate_across_sentinel_batches(self) -> None:
         """PROTO-6: Track global top candidate and runner-up across all sentinel batches."""
         skills = [{"name": f"skill-{i}", "description": f"desc {i}"} for i in range(25)]
-        noul_resp = {"answers": {"specialist_needed": {"noul": 0.90}}}
+        noul_resp = {"answers": {"specialised_workflow": {"noul": 0.90}}}
 
         # Batch 1 (skills 0..23): winner is __no_match__ (p=0.55), but skill-5 scored 0.45
         resp_b1 = {

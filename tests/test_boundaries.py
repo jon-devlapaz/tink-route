@@ -18,7 +18,7 @@ class TestPublicationBoundaries(unittest.TestCase):
     def setUp(self):
         self.client = JevRouterClient('fixture')
         self.skills = [{'name': f's{i}', 'description': 'test'} for i in range(25)]
-        self.need = {'answers': {'specialist_needed': {'noul': .9}}}
+        self.need = {'answers': {'specialised_workflow': {'noul': .9}}}
 
     @staticmethod
     def choice(name, probability=.9):
@@ -48,7 +48,7 @@ class TestPublicationBoundaries(unittest.TestCase):
                     self.client.route('test', self.skills[:1], tri_gate=False, rerank=False)
 
     def test_malformed_answers_fail_as_operational_errors(self):
-        for response in (None, {'answers': None}, {'answers': {'specialist_needed': {}}}):
+        for response in (None, {'answers': None}, {'answers': {'specialised_workflow': {}}}):
             with self.subTest(response=response), patch.object(self.client, '_call_api', return_value=response):
                 with self.assertRaises(RuntimeError):
                     self.client.route('test', self.skills, tri_gate=False, rerank=False)

@@ -7,7 +7,7 @@ from tink_route.adapters.client import JevRouterClient
 
 
 def _gate(high: float = 0.9) -> dict:
-    return {"answers": {"specialist_needed": {"noul": high}}}
+    return {"answers": {"specialised_workflow": {"noul": high}}}
 
 
 def _stage2(choice: str, probs: dict) -> dict:

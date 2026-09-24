@@ -81,7 +81,7 @@ class TestMultiPool(unittest.TestCase):
     def test_multi_draws_from_all_batches(self) -> None:
         client = JevRouterClient(api_key="k")
         skills = [{"name": f"s{i}", "description": f"d{i}"} for i in range(30)]
-        gate = {"answers": {"specialist_needed": {"noul": 0.9}}}
+        gate = {"answers": {"specialised_workflow": {"noul": 0.9}}}
         b1 = {"answers": {"selected_skill": {
             "choice": "s0", "confidence": 0.99,
             "probabilities": {"s0": 0.99, **{f"s{i}": 0.95 for i in range(1, 24)}}}}}

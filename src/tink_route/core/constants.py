@@ -19,17 +19,12 @@ MULTI_DEFAULT_TOP_K = 3
 MULTI_MAX_TOP_K = 10
 
 GATE_QUESTIONS = {
-    "acts_on_user_system": (
-        "Is the assistant being asked to act on the user's files, accounts, devices, "
-        "or online services, rather than only to explain or advise?"
-    ),
-    "would_follow_documented_procedure": (
-        "Would a careful expert answering this consult a specific documented procedure "
-        "or set of commands, rather than answering from general understanding?"
-    ),
-    "prose_suffices": (
-        "Could a knowledgeable generalist fully satisfy this request in prose, with "
-        "no tools, no documentation, and no access to the user's files or accounts?"
+    "specialised_workflow": (
+        "Is the actual task a specialised workflow rather than an ordinary reply? "
+        "A specialised workflow produces a structured deliverable or inspects, transforms, "
+        "or modifies a document, dataset, codebase, or system using task-specific procedures. "
+        "Document-level work counts even when its result is prose and no external tool is necessary. "
+        "An ordinary reply is conversation, a general explanation, arithmetic, or an isolated short text transformation."
     ),
 }
 

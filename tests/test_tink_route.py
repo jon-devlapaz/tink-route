@@ -470,7 +470,7 @@ description: 'quoted description'
         resp_stage1 = MagicMock()
         resp_stage1.read.return_value = json.dumps({
             "model": "jev-1.13.0",
-            "answers": {"specialist_needed": {"type": "noul", "noul": 0.90}}
+            "answers": {"specialised_workflow": {"type": "noul", "noul": 0.90}}
         }).encode("utf-8")
 
         # API tries to return ../outside

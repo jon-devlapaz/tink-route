@@ -12,14 +12,8 @@ class TestTriNoulGate(unittest.TestCase):
         self.client = JevRouterClient(api_key="test-key")
 
     def test_tri_gate_rejects_explanatory_requests(self) -> None:
-        """Orthogonal nouls down-weight subject-matter explanations that need no skill."""
-        gate = {
-            "answers": {
-                "acts_on_user_system": {"noul": 0.05},
-                "would_follow_documented_procedure": {"noul": 0.10},
-                "prose_suffices": {"noul": 0.95},
-            }
-        }
+        """A low specialised-workflow score returns no_skill_needed before rerank."""
+        gate = {"answers": {"specialised_workflow": {"noul": 0.10}}}
         with patch.object(self.client, "_call_api", return_value=gate) as api:
             res = self.client.route(
                 "Explain how GLSL vertex shaders calculate lighting",
@@ -27,21 +21,20 @@ class TestTriNoulGate(unittest.TestCase):
                 tri_gate=True, rerank=False,
             )
         self.assertEqual(res.status, "no_skill_needed")
-        self.assertAlmostEqual(res.specialist_noul or 0.0, 0.067, places=3)
+        self.assertAlmostEqual(res.specialist_noul or 0.0, 0.10, places=3)
         self.assertEqual(api.call_count, 1)
         questions = api.call_args.args[0]["questions"]
-        self.assertIn("acts_on_user_system", questions)
-        self.assertIn("would_follow_documented_procedure", questions)
-        self.assertIn("prose_suffices", questions)
+        self.assertIn("specialised_workflow", questions)
+        self.assertNotIn("acts_on_user_system", questions)
+        self.assertNotIn("prose_suffices", questions)
         self.assertIn("selected_skill", questions)
-        self.assertNotIn("specialist_needed", questions)
         criteria = questions["selected_skill"]["criteria"]
         self.assertIn("threejs-shaders", criteria)
         self.assertIn("__no_skill__", criteria)
         self.assertIn("__no_match__", criteria)
 
     def test_tri_gate_missing_answers_are_protocol_errors(self) -> None:
-        with patch.object(self.client, "_call_api", return_value={"answers": {"acts_on_user_system": {"noul": 0.9}}}):
+        with patch.object(self.client, "_call_api", return_value={"answers": {"selected_skill": {"choice": "threejs-shaders"}}}):
             with self.assertRaises(ApiProtocolError):
                 self.client.route("Build shaders", [{"name": "threejs-shaders", "description": "GLSL"}], tri_gate=True, rerank=False)
 
@@ -63,7 +56,7 @@ class TestShortlistRerank(unittest.TestCase):
                 "body": "# PPTX Author\nUse python-pptx to generate slides from scratch.",
             },
         ]
-        self.noul = {"answers": {"specialist_needed": {"noul": 0.92}}}
+        self.noul = {"answers": {"specialised_workflow": {"noul": 0.92}}}
         self.stage2 = {
             "answers": {
                 "selected_skill": {
@@ -101,6 +94,27 @@ class TestShortlistRerank(unittest.TestCase):
         criteria = rerank_payload["questions"]["selected_skill"]["criteria"]
         self.assertIn("python-pptx", criteria["pptx-author"])
         self.assertIn("fits::pptx-author", rerank_payload["questions"])
+
+    def test_rerank_keeps_choice_winner_when_neighbor_fits_higher(self) -> None:
+        rerank = {
+            "answers": {
+                "selected_skill": {
+                    "choice": "pptx-author",
+                    "confidence": 0.99,
+                    "probabilities": {"pptx-author": 0.99, "powerpoint": 0.01},
+                },
+                "fits::powerpoint": {"noul": 0.73},
+                "fits::pptx-author": {"noul": 0.38},
+            }
+        }
+        with patch.object(self.client, "_call_api", side_effect=[self.noul, self.stage2, rerank]):
+            res = self.client.route(
+                "Author a new investor pitch deck from scratch",
+                self.skills,
+                rerank=True, tri_gate=False,
+            )
+        self.assertEqual(res.status, "routed")
+        self.assertEqual(res.winner, "pptx-author")
 
     def test_rerank_rejects_when_no_candidate_fits(self) -> None:
         rerank = {
