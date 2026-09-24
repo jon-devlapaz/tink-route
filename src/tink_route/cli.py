@@ -123,6 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=MULTI_DEFAULT_TOP_K,
         help=f"Maximum skills to return with --multi (default: {MULTI_DEFAULT_TOP_K}).",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="With the 'update' task: only check for a newer release, do not install.",
+    )
     return parser
 
 
@@ -226,6 +231,45 @@ def main() -> int:
             return 0
         if res.errors:
             return 2
+        return 0
+
+    if args.task == "update":
+        from .adapters.updater import UpdateError, check_for_update, perform_update
+
+        try:
+            check = check_for_update()
+        except UpdateError as e:
+            err = {"error": str(e)}
+            if args.json:
+                print(json.dumps(err))
+            else:
+                print(f"Update error: {e}", file=sys.stderr)
+            return 2
+        if not check.newer_available or check.asset is None:
+            if args.json:
+                print(json.dumps({"status": "up_to_date", "version": check.current}))
+            else:
+                print(f"Up to date (v{check.current}).")
+            return 0
+        if args.check:
+            if args.json:
+                print(json.dumps({"status": "update_available", "current": check.current, "latest": check.latest}))
+            else:
+                print(f"Update available: v{check.current} → v{check.latest} (re-run without --check to install).")
+            return 1
+        try:
+            done = perform_update(check)
+        except UpdateError as e:
+            err = {"error": str(e)}
+            if args.json:
+                print(json.dumps(err))
+            else:
+                print(f"Update error: {e}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps({"status": "updated", "previous": check.current, "version": done.current}))
+        else:
+            print(f"Updated v{check.current} → v{done.current}.")
         return 0
 
     if not args.task:
