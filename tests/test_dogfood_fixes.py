@@ -204,5 +204,24 @@ class TestCliFixes(unittest.TestCase):
         self.assertIn("no_candidates_available", out)
         self.assertNotIn("Top candidate 'None'", out)
 
+    def test_version_subcommand_plain(self) -> None:
+        import json
+        from tink_route import __version__
+        with tempfile.TemporaryDirectory() as td:
+            code, out, err = self._run_main(["tink-route", "version"], Path(td))
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertEqual(out.strip(), f"tink-route {__version__}")
+
+    def test_version_subcommand_json(self) -> None:
+        import json
+        from tink_route import __version__
+        with tempfile.TemporaryDirectory() as td:
+            code, out, err = self._run_main(["tink-route", "version", "--json"], Path(td))
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        payload = json.loads(out)
+        self.assertEqual(payload, {"version": __version__})
+
 if __name__ == "__main__":
     unittest.main()

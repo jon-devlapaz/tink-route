@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "task",
         nargs="?",
-        help="The task description to evaluate, or 'prune' to sweep ephemeral skills.",
+        help="The task description to evaluate, or 'prune', 'update', or 'version'.",
     )
     parser.add_argument(
         "--prune",
@@ -270,6 +270,13 @@ def main() -> int:
             print(json.dumps({"status": "updated", "previous": check.current, "version": done.current}))
         else:
             print(f"Updated v{check.current} → v{done.current}.")
+        return 0
+
+    if args.task == "version":
+        if args.json:
+            print(json.dumps({"version": __version__}))
+        else:
+            print(f"tink-route {__version__}")
         return 0
 
     if not args.task:
