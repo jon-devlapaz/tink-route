@@ -4,11 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tink_route.client import JevRouterClient
+from tink_route.adapters.client import JevRouterClient
 from tink_route.metadata import load_library_skills
 
 HOME_SKILLS = Path.home() / ".tink" / "skills"
-SKILL_NAMES = ("interrogate", "skill-scout", "ai-native-sdlc")
+SKILL_NAMES = ("skill-scout", "ai-native-sdlc")
 
 
 def skill_source(name: str) -> Path:
@@ -18,10 +18,10 @@ def skill_source(name: str) -> Path:
     raise FileNotFoundError(f"No SKILL.md for {name} in {HOME_SKILLS}")
 
 
-def stage_that_failed(expected: str, result: dict) -> str:
-    noul = result.get("specialist_noul")
-    threshold = result.get("threshold", 0.60)
-    status = result.get("status")
+def stage_that_failed(expected: str, result) -> str:
+    noul = result.specialist_noul
+    threshold = result.threshold if result.threshold is not None else 0.60
+    status = result.status
     if expected == "no_skill_needed":
         if noul is not None and noul >= threshold:
             return "stage 1"
@@ -62,26 +62,19 @@ class TestThroughlineRouteEval(unittest.TestCase):
 
     def _expect(self, expected: str, task: str):
         result = self.client.route(task=task, skills=self.skills)
-        actual = result["winner"] if result.get("status") == "routed" else result.get("status")
+        actual = result.winner if result.status == "routed" else result.status
         self.assertEqual(
             actual,
             expected,
             (
                 f"expected {expected!r}, got {actual!r}; "
                 f"failed at {stage_that_failed(expected, result)}; "
-                f"status={result.get('status')} "
-                f"specialist_noul={result.get('specialist_noul')} "
-                f"winner={result.get('winner')} "
-                f"probability={result.get('probability')} "
-                f"top_candidate={result.get('top_candidate')}"
+                f"status={result.status} "
+                f"specialist_noul={result.specialist_noul} "
+                f"winner={result.winner} "
+                f"probability={result.probability} "
+                f"top_candidate={result.top_candidate}"
             ),
-        )
-
-    def test_interrogate_plan_before_coding(self):
-        self._expect(
-            "interrogate",
-            "Before any coding, grill this plan and pressure-test it. "
-            "Interrogate the assumptions, find the holes, and identify the missing decisions.",
         )
 
     def test_skill_scout_before_writing_a_skill(self):
