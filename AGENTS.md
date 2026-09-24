@@ -12,3 +12,12 @@ This repository follows the [AI-Native SDLC Playbook](/Users/jondev/dev/ai-nativ
 - If you must test a system in isolation, first write down all the ways it could fail, then write the code.
 - Respect Tink invariants: inspection authority is strictly separated from mutation authority.
 - The default execution must remain read-only; `--install` is required for project mutations.
+
+## git-golden
+
+A repository is `git-golden` when all of the following are true:
+
+- It is checked out on `main` with a clean working tree.
+- Local `main` is even with `origin/main`.
+- GitHub has no open pull requests and no open issues.
+- The latest `CI` run on `main` succeeded.
