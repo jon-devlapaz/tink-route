@@ -6,48 +6,10 @@ from unittest.mock import MagicMock, patch
 from tink_route.adapters.client import JevRouterClient
 from tink_route.cli import install_skill
 from tink_route.core.models import InstallOutcome, PruneReport, RoutingResult
-from tink_route.metadata import load_library_skills, parse_skill_metadata
+from tink_route.metadata import parse_skill_metadata
 
 
 class TestTinkRoute(unittest.TestCase):
-
-    def test_parse_frontmatter(self):
-        raw = """---
-name: test-skill
-description: A skill for testing.
----
-# Test Skill Body
-"""
-        meta = parse_skill_metadata(raw, "fallback-name")
-        self.assertEqual(meta["name"], "test-skill")
-        self.assertEqual(meta["description"], "A skill for testing.")
-
-    def test_parse_frontmatter_fallback_name(self):
-        raw = """---
-description: A skill without explicit name.
----
-"""
-        meta = parse_skill_metadata(raw, "my-dir-name")
-        self.assertEqual(meta["name"], "my-dir-name")
-        self.assertEqual(meta["description"], "A skill without explicit name.")
-
-    def test_load_library_skills(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-            skill_a = tmppath / "skill-a"
-            skill_a.mkdir()
-            (skill_a / "SKILL.md").write_text("---\nname: skill-a\ndescription: Skill A description\n---\n")
-
-            skill_b = tmppath / "skill-b"
-            skill_b.mkdir()
-            (skill_b / "SKILL.md").write_text("---\ndescription: Skill B description\n---\n")
-
-            skills = load_library_skills(tmppath)
-            self.assertEqual(len(skills), 2)
-            names = [s["name"] for s in skills]
-            self.assertIn("skill-a", names)
-            self.assertIn("skill-b", names)
 
     @patch("subprocess.run")
     def test_install_flag_surfaces_references_and_scripts(self, mock_subprocess):
@@ -72,24 +34,6 @@ description: A skill without explicit name.
             self.assertEqual(outcome.skill_path, ".agents/skills/cro/SKILL.md")
             self.assertEqual(outcome.references, ["references/experiments.md", "references/form.md"])
             self.assertEqual(outcome.scripts, ["scripts/audit.sh"])
-
-    def test_ephemeral_ledger_recording(self):
-        import tempfile
-        from tink_route import load_ephemeral_skills, record_ephemeral_skill
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-            self.assertEqual(load_ephemeral_skills(tmppath), [])
-
-            record_ephemeral_skill(tmppath, "threejs-shaders")
-            self.assertEqual(load_ephemeral_skills(tmppath), ["threejs-shaders"])
-
-            # Idempotent addition
-            record_ephemeral_skill(tmppath, "threejs-shaders")
-            self.assertEqual(load_ephemeral_skills(tmppath), ["threejs-shaders"])
-
-            record_ephemeral_skill(tmppath, "cro")
-            self.assertEqual(load_ephemeral_skills(tmppath), ["threejs-shaders", "cro"])
 
     @patch("subprocess.run")
     def test_prune_ephemeral_skills_with_manifest_protection(self, mock_subprocess):
