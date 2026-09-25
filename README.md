@@ -2,7 +2,7 @@
 
 > Dynamic, confidence-aware Agent Skill routing powered by [TypeSafe Jev](https://docs.typesafe.ai/) and [Tink](https://github.com/jon-devlapaz/tink).
 
-Eliminates progressive disclosure prompt bloat by keeping skill libraries offline in `~/.tink/skills/` and dynamically loading only verified, load-bearing skills into `.agents/skills/` on demand.
+Eliminates progressive disclosure prompt bloat by keeping skill libraries offline in `~/.tink-library/skills/` (or `$TINK_HOME/skills`) and dynamically loading only verified, load-bearing skills into `.agents/skills/` on demand.
 
 ---
 
@@ -164,7 +164,7 @@ tink-route --json "Audit this codebase architecture"
 ## System Architecture
 
 ```
-[ Cold Library ]      ~/.tink/skills/ (46+ skills, invisible to agent prompts)
+[ Cold Library ]      ~/.tink-library/skills/ (46+ skills, invisible to agent prompts)
                            │
                            ▼
 [ Semantic Router ]   tink-route "<task>" [-i]

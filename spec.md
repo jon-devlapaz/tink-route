@@ -7,7 +7,7 @@ Reference: `intent.md` (2026-09-21)
 
 ## 1. Overview & Objectives
 
-`tink-route` is a deterministic command-line interface designed to bridge the gap between Tink's cold skill library (`~/.tink/skills/`) and the active project working set (`.agents/skills/`). It uses TypeSafe Jev (`jev-1.13.0`) to perform typed, confidence-aware routing, ensuring that:
+`tink-route` is a deterministic command-line interface designed to bridge the gap between Tink's cold skill library (`~/.tink-library/skills/`, or `$TINK_HOME/skills`) and the active project working set (`.agents/skills/`). It uses TypeSafe Jev (`jev-1.13.0`) to perform typed, confidence-aware routing, ensuring that:
 1. Standard coding tasks incur zero skill installations and avoid unnecessary catalog evaluations.
 2. Specialized tasks are mapped to the most load-bearing skill in the library.
 3. The agent system prompt remains free of progressive disclosure token bloat.
@@ -25,7 +25,7 @@ Reference: `intent.md` (2026-09-21)
   - `--ephemeral / --no-ephemeral`: Mark skill as ephemeral in `.tink/ephemeral.json` for automatic pruning (default: `true` when `-i` is used).
   - `--threshold <float>`: Minimum probability threshold for the Stage 1 need gate and Stage 2 selection (default: `0.60`).
   - `--json`: Output full routing diagnostics and decision in machine-readable JSON.
-  - `--library <path>`: Directory containing skill candidate trees (default: `~/.tink/skills`).
+  - `--library <path>`: Directory containing skill candidate trees (default: `~/.tink-library/skills` or `$TINK_HOME/skills`).
   - `--model <name>`: Pinned Jev model identifier (default: `jev-1.13.0`).
   - `--dry-run`: Used with `prune` to preview which skills would be removed without modifying `.agents/skills/`.
   - `-v`, `--version`: Output installed version.
@@ -81,7 +81,7 @@ Reference: `intent.md` (2026-09-21)
 
 ### 2.3 Stage 2: Candidate Ranking & Selection (Choice)
 - If Stage 1 passes ($p \ge \text{threshold}$):
-  - Ingest `SKILL.md` frontmatter (`name`, `description`) across all subdirectories in `~/.tink/skills/`.
+  - Ingest `SKILL.md` frontmatter (`name`, `description`) across all subdirectories in the resolved library (`~/.tink-library/skills/` or `$TINK_HOME/skills`).
   - Construct a Jev `choice` question:
     - `criteria`: Map of skill names to their published descriptions.
     - `instructions`: `"Which skill is most directly load-bearing and capable of executing the requested transformation?"`
@@ -227,7 +227,7 @@ Reference: `intent.md` (2026-09-21)
    - *Concern:* If the TypeSafe API times out or is unreachable, the agent loop could hang.
    - *Mitigation:* Set a strict 5-second socket timeout on all HTTP requests. On timeout or 5xx, exit cleanly with code `2` and fallback advice.
 2. **Library Scalability & Batching:**
-   - *Concern:* As `~/.tink/skills/` grows past 50–100 skills, single Choice requests could exceed byte/token budgets.
+   - *Concern:* As the skill library grows past 50–100 skills, single Choice requests could exceed byte/token budgets.
    - *Mitigation:* Batch candidates into chunks of $\le 20$ candidates per request if needed; for the current 46 skills, two parallel batches or high-signal keyword pre-filtering ensure safe byte margins (< 16 KB).
 3. **Accidental File Overwrites in `.agents/skills/`:**
    - *Concern:* Running `tink skill add` might overwrite an existing customized skill.

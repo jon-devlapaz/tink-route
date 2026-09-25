@@ -11,12 +11,12 @@ from . import __version__
 from .adapters.executor import DefaultSubprocessExecutor
 from .adapters.ledger import default_ledger
 from .adapters.client import DEFAULT_MODEL, DEFAULT_THRESHOLD, JevRouterClient
-from .core.constants import FITS_THRESHOLD, MULTI_DEFAULT_TOP_K
+from .core.constants import FITS_THRESHOLD, MULTI_DEFAULT_TOP_K, get_default_library_path
 from .core.engine import RoutingEngine
 from .core.models import InstallOutcome, RoutingResult
 from .metadata import load_library_skills
 
-DEFAULT_LIBRARY_PATH = Path.home() / ".tink" / "skills"
+DEFAULT_LIBRARY_PATH = get_default_library_path()
 _DEFAULT_EXECUTOR = DefaultSubprocessExecutor()
 _DEFAULT_ENGINE = RoutingEngine(executor=_DEFAULT_EXECUTOR, ledger=default_ledger)
 
@@ -85,8 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--library",
         type=Path,
-        default=DEFAULT_LIBRARY_PATH,
-        help=f"Path to Tink skill library directory (default: {DEFAULT_LIBRARY_PATH}).",
+        default=None,
+        help="Path to Tink skill library directory (default: ~/.tink-library/skills or $TINK_HOME/skills).",
     )
     parser.add_argument(
         "--model",
@@ -198,6 +198,14 @@ def _print_route(result: RoutingResult, *, installing: bool) -> None:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.library is None:
+        if DEFAULT_LIBRARY_PATH != (Path.home() / ".tink-library" / "skills"):
+            args.library = Path(DEFAULT_LIBRARY_PATH)
+        else:
+            args.library = get_default_library_path()
+    else:
+        args.library = Path(args.library)
 
     # Handle prune command (either `tink-route prune` or `tink-route --prune`)
     if args.task == "prune" or args.prune:

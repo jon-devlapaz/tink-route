@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from tink_route.adapters.client import JevRouterClient
 from tink_route.cli import install_skill
+from tink_route.core.constants import get_default_library_path
 from tink_route.core.models import InstallOutcome, PruneReport, RoutingResult
 from tink_route.metadata import load_library_skills, parse_skill_metadata
 
@@ -506,6 +507,39 @@ description: 'quoted description'
             , tri_gate=False, rerank=False)
 
         self.assertIn("invalid candidate", str(ctx.exception))
+
+
+class TestDefaultLibraryPath(unittest.TestCase):
+
+    def _fresh_path(self):
+        import tink_route.core.constants as constants
+        return constants.get_default_library_path()
+
+    def test_tink_home_absolute_takes_precedence(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict("os.environ", {"TINK_HOME": tmpdir}):
+                self.assertEqual(self._fresh_path(), Path(tmpdir) / "skills")
+
+    def test_tink_home_relative_absolutized_against_cwd(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd = Path(tmpdir)
+            with patch("pathlib.Path.cwd", return_value=cwd):
+                with patch.dict("os.environ", {"TINK_HOME": "rel-home"}):
+                    self.assertEqual(self._fresh_path(), cwd / "rel-home" / "skills")
+
+    def test_canonical_default_when_no_tink_home(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as fake_home:
+            with patch("pathlib.Path.home", return_value=Path(fake_home)):
+                with patch.dict("os.environ", {}, clear=False):
+                    import os
+                    os.environ.pop("TINK_HOME", None)
+                    self.assertEqual(
+                        self._fresh_path(),
+                        Path(fake_home) / ".tink-library" / "skills",
+                    )
 
 
 if __name__ == "__main__":

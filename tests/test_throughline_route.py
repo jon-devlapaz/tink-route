@@ -5,9 +5,10 @@ import unittest
 from pathlib import Path
 
 from tink_route.adapters.client import JevRouterClient
+from tink_route.core.constants import get_default_library_path
 from tink_route.metadata import load_library_skills
 
-HOME_SKILLS = Path.home() / ".tink" / "skills"
+HOME_SKILLS = get_default_library_path()
 SKILL_NAMES = ("skill-scout", "ai-native-sdlc")
 
 

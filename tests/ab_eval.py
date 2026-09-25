@@ -14,8 +14,11 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 # Paths
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+from tink_route.core.constants import get_default_library_path
+
 TINK_ROUTE_BIN = Path.home() / ".local" / "bin" / "tink-route"
-LIBRARY_DIR = Path.home() / ".tink" / "skills"
+LIBRARY_DIR = get_default_library_path()
 SANDBOX_ROOT = Path("/tmp/tink-ab-test")
 CONTROL_DIR = SANDBOX_ROOT / "control"
 TREATMENT_DIR = SANDBOX_ROOT / "treatment"
@@ -85,14 +88,9 @@ def setup_sandboxes():
 
 def build_control_prompt_block(library_dir: Path) -> str:
     """Generate the standard Agent Skills progressive disclosure XML prompt block."""
-    import importlib.util
-    from importlib.machinery import SourceFileLoader
-    loader = SourceFileLoader("tink_route", str(TINK_ROUTE_BIN))
-    spec = importlib.util.spec_from_loader("tink_route", loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
+    from tink_route.metadata import load_library_skills
 
-    skills = mod.load_library_skills(library_dir)
+    skills = load_library_skills(library_dir)
     lines = [
         "<available_skills>",
         "The following skills provide specialized instructions for specific tasks.",

@@ -1,5 +1,8 @@
 """Core constants for tink-route."""
 
+import os
+from pathlib import Path
+
 DEFAULT_MODEL = "jev-1.13.0"
 DEFAULT_THRESHOLD = 0.60
 GATE_ABSTAIN = 0.30
@@ -17,6 +20,16 @@ FITS_THRESHOLD = 0.30
 
 MULTI_DEFAULT_TOP_K = 3
 MULTI_MAX_TOP_K = 10
+
+
+def get_default_library_path() -> Path:
+    tink_home = os.environ.get("TINK_HOME")
+    if tink_home:
+        home = Path(tink_home).expanduser()
+        if not home.is_absolute():
+            home = Path.cwd() / home
+        return home / "skills"
+    return Path.home() / ".tink-library" / "skills"
 
 GATE_QUESTIONS = {
     "specialised_workflow": (

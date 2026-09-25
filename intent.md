@@ -4,7 +4,7 @@ Author: jondev (system architect) & pi. Status: approved (v0.5.1 iteration).
 
 ## Problem
 - **Progressive Disclosure Overhead:** Pi and the Agent Skills standard inject every discovered skill's `<name>` and `<description>` into the agent's base system prompt on every turn. Across 40+ skills in a library, this burns 2,500–5,000+ tokens per turn and causes attention dilution, prompt pollution, and false-positive activations on standard coding tasks.
-- **Inventory Mismatch:** Tink intentionally isolates its cold/warm skill library in `~/.tink/skills/` (not an agent discovery root). Only skills explicitly promoted to `<project>/.agents/skills/` should be visible to agents.
+- **Inventory Mismatch:** Tink intentionally isolates its cold/warm skill library in `~/.tink-library/skills/` (or `$TINK_HOME/skills`) (not an agent discovery root). Only skills explicitly promoted to `<project>/.agents/skills/` should be visible to agents.
 - **Audited Boundary Defects (v0.5.1 Audit Remediation):**
   1. **Concurrent Ledger Writes:** Concurrent `tink-route -i` calls race on `ephemeral.json`, overwriting each other's records. Must use process/thread file locking and atomic temporary file replacement.
   2. **Partial Prune Failures Reporting Success (0):** When `tink-route prune` prunes some skills but fails on others, it returns `0`. Partial failures must return operational error code `2`.
@@ -20,7 +20,7 @@ Author: jondev (system architect) & pi. Status: approved (v0.5.1 iteration).
 ## Affected users and systems
 - **Users:** Developers and automated agent harnesses (Pi, Claude Code, Cursor, Codex).
 - **Systems:**
-  - `tink` CLI (`tink skill add`, `tink skill remove`) & `~/.tink/skills/` library.
+  - `tink` CLI (`tink skill add`, `tink skill remove`) & `~/.tink-library/skills/` library ($TINK_HOME-compatible).
   - Project `.agents/skills/` directory and `.tink/ephemeral.json` ledger.
   - TypeSafe Jev API (`api.typesafe.ai` via `TYPESAFE_API_KEY`).
   - Automated agent pipelines executing dynamic routing.
