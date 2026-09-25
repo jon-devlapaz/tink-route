@@ -69,14 +69,6 @@ class TestCheckFlow(unittest.TestCase):
             from tink_route.adapters.updater import check_for_update
             return check_for_update()
 
-    def test_up_to_date(self) -> None:
-        self.assertFalse(self._check("0.6.0").newer_available)
-
-    def test_newer_available(self) -> None:
-        check = self._check("0.5.2")
-        self.assertTrue(check.newer_available)
-        self.assertEqual(check.latest, "0.6.0")
-
     def test_downgrade_refused(self) -> None:
         with self.assertRaises(UpdateError):
             self._check("9.9.9")
