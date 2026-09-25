@@ -36,5 +36,6 @@ venv.bak/
 .vscode/
 *.swp
 .tink/
+.agents/
 .coverage
 .coverage.*
