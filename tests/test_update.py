@@ -55,11 +55,15 @@ class TestAssetSelection(unittest.TestCase):
             select_update_asset(_meta(names=("other.txt",)), False)
         self.assertIn("other.txt", str(ctx.exception))
 
-    def test_missing_digest_rejected(self) -> None:
+    def test_missing_digest_allowed(self) -> None:
         meta = _meta()
         del meta["assets"][0]["digest"]
-        with self.assertRaises(UpdateError):
-            select_update_asset(meta, False)
+        asset = select_update_asset(meta, False)
+        self.assertIsNone(asset.sha256)
+
+    def test_present_digest_verified(self) -> None:
+        asset = select_update_asset(_meta(), False)
+        self.assertEqual(len(asset.sha256 or b""), 32)
 
 
 class TestCheckFlow(unittest.TestCase):
@@ -71,6 +75,21 @@ class TestCheckFlow(unittest.TestCase):
 
     def test_up_to_date(self) -> None:
         self.assertFalse(self._check("0.6.0").newer_available)
+
+    def test_up_to_date_without_assets(self) -> None:
+        with patch.object(updater, "installed_version", return_value="0.6.0"), \
+             patch.object(updater, "fetch_json", return_value={"tag_name": "v0.6.0", "assets": []}):
+            from tink_route.adapters.updater import check_for_update
+            check = check_for_update()
+        self.assertFalse(check.newer_available)
+        self.assertEqual(check.latest, "0.6.0")
+
+    def test_newer_without_assets_errors(self) -> None:
+        with patch.object(updater, "installed_version", return_value="0.5.2"), \
+             patch.object(updater, "fetch_json", return_value={"tag_name": "v0.6.0", "assets": []}):
+            from tink_route.adapters.updater import check_for_update
+            with self.assertRaises(UpdateError):
+                check_for_update()
 
     def test_newer_available(self) -> None:
         check = self._check("0.5.2")

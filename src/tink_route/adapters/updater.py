@@ -107,16 +107,22 @@ class ReleaseAsset:
     version: str
     name: str
     url: str
-    sha256: bytes
+    sha256: bytes | None
 
 
-def select_update_asset(metadata: dict[str, Any], allow_file: bool) -> ReleaseAsset:
-    """Pick the wheel asset, falling back to the sdist, for this release."""
+def release_version(metadata: dict[str, Any]) -> tuple[str, str]:
+    """Extract (tag, version) from release metadata without requiring assets."""
     tag = metadata.get("tag_name")
     if not isinstance(tag, str) or not tag:
         raise _fail("release metadata missing tag_name")
     version = tag[1:] if tag.startswith("v") else tag
     parse_version(version)
+    return tag, version
+
+
+def select_update_asset(metadata: dict[str, Any], allow_file: bool) -> ReleaseAsset:
+    """Pick the wheel asset, falling back to the sdist, for this release."""
+    tag, version = release_version(metadata)
     assets = metadata.get("assets")
     if not isinstance(assets, list):
         raise _fail("release metadata missing assets")
@@ -134,15 +140,16 @@ def select_update_asset(metadata: dict[str, Any], allow_file: bool) -> ReleaseAs
     if not isinstance(url, str):
         raise _fail(f"asset {match.get('name')} missing browser_download_url")
     validate_release_url(url, allow_file=allow_file)
-    digest = match.get("digest")
-    if not isinstance(digest, str):
-        raise _fail(f"asset {match.get('name')} missing digest")
+    digest_raw = match.get("digest")
+    digest: bytes | None = None
+    if isinstance(digest_raw, str) and digest_raw:
+        digest = parse_sha256(digest_raw)
     return ReleaseAsset(
         tag=tag,
         version=version,
         name=str(match.get("name")),
         url=url,
-        sha256=parse_sha256(digest),
+        sha256=digest,
     )
 
 
@@ -249,10 +256,13 @@ def check_for_update(api_url: str | None = None) -> UpdateCheck:
     current = installed_version()
     url, allow_file = (api_url, True) if api_url else releases_api_url()
     metadata = fetch_json(url, METADATA_TIMEOUT)
-    asset = select_update_asset(metadata, allow_file)
-    relation = compare_versions(asset.version, current)
+    tag, release_ver = release_version(metadata)
+    relation = compare_versions(release_ver, current)
     if relation < 0:
-        raise _fail(f"refusing to downgrade tink-route from v{current} to v{asset.version}")
+        raise _fail(f"refusing to downgrade tink-route from v{current} to v{release_ver}")
+    if relation == 0:
+        return UpdateCheck(current=current, latest=release_ver, asset=None)
+    asset = select_update_asset(metadata, allow_file)
     return UpdateCheck(current=current, latest=asset.version, asset=asset)
 
 
@@ -264,7 +274,8 @@ def perform_update(check: UpdateCheck, download: Any = None) -> UpdateCheck:
     with tempfile.TemporaryDirectory(prefix="tink-route-update-") as tmpdir:
         archive = Path(tmpdir) / check.asset.name
         fetch(check.asset.url, archive)
-        verify_digest(archive, check.asset.sha256)
+        if check.asset.sha256 is not None:
+            verify_digest(archive, check.asset.sha256)
         pip_install(archive)
     probed = probe_installed_version()
     if compare_versions(probed, check.asset.version) != 0:
