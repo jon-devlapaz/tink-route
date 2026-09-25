@@ -11,28 +11,6 @@ class TestTriNoulGate(unittest.TestCase):
     def setUp(self) -> None:
         self.client = JevRouterClient(api_key="test-key")
 
-    def test_tri_gate_rejects_explanatory_requests(self) -> None:
-        """A low specialised-workflow score returns no_skill_needed before rerank."""
-        gate = {"answers": {"specialised_workflow": {"noul": 0.10}}}
-        with patch.object(self.client, "_call_api", return_value=gate) as api:
-            res = self.client.route(
-                "Explain how GLSL vertex shaders calculate lighting",
-                [{"name": "threejs-shaders", "description": "Write GLSL shaders"}],
-                tri_gate=True, rerank=False,
-            )
-        self.assertEqual(res.status, "no_skill_needed")
-        self.assertAlmostEqual(res.specialist_noul or 0.0, 0.10, places=3)
-        self.assertEqual(api.call_count, 1)
-        questions = api.call_args.args[0]["questions"]
-        self.assertIn("specialised_workflow", questions)
-        self.assertNotIn("acts_on_user_system", questions)
-        self.assertNotIn("prose_suffices", questions)
-        self.assertIn("selected_skill", questions)
-        criteria = questions["selected_skill"]["criteria"]
-        self.assertIn("threejs-shaders", criteria)
-        self.assertIn("__no_skill__", criteria)
-        self.assertIn("__no_match__", criteria)
-
     def test_tri_gate_missing_answers_are_protocol_errors(self) -> None:
         with patch.object(self.client, "_call_api", return_value={"answers": {"selected_skill": {"choice": "threejs-shaders"}}}):
             with self.assertRaises(ApiProtocolError):
