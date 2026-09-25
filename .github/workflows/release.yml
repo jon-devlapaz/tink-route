@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -11,6 +12,11 @@ jobs:
       contents: write
     steps:
     - uses: actions/checkout@v4
+
+    - name: Check tag matches pyproject version
+      run: |
+        ver=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+        test "v$ver" = "${{ github.ref_name }}" || { echo "tag ${{ github.ref_name }} != pyproject v$ver"; exit 1; }
 
     - name: Set up Python
       uses: actions/setup-python@v5

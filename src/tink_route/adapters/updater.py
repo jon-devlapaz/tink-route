@@ -108,6 +108,7 @@ class ReleaseAsset:
     name: str
     url: str
     sha256: bytes | None
+    checksums_url: str | None = None
 
 
 def release_version(metadata: dict[str, Any]) -> tuple[str, str]:
@@ -144,13 +145,37 @@ def select_update_asset(metadata: dict[str, Any], allow_file: bool) -> ReleaseAs
     digest: bytes | None = None
     if isinstance(digest_raw, str) and digest_raw:
         digest = parse_sha256(digest_raw)
+    checksums_url: str | None = None
+    sums = by_name.get("SHA256SUMS")
+    if isinstance(sums, dict) and isinstance(sums.get("browser_download_url"), str):
+        checksums_url = validate_release_url(str(sums["browser_download_url"]), allow_file=allow_file)
     return ReleaseAsset(
         tag=tag,
         version=version,
         name=str(match.get("name")),
         url=url,
         sha256=digest,
+        checksums_url=checksums_url,
     )
+
+
+def expected_digest_from_checksums(text: str, filename: str) -> bytes:
+    """Look up filename in sha256sum output; fail closed when absent."""
+    for line in text.splitlines():
+        hexpart, sep, name = line.partition(" ")
+        if not sep:
+            continue
+        name = name.strip().lstrip("*")
+        if name != filename:
+            continue
+        try:
+            raw = bytes.fromhex(hexpart.strip())
+        except ValueError as exc:
+            raise _fail(f"SHA256SUMS entry for {filename} is not valid hex") from exc
+        if len(raw) != 32:
+            raise _fail(f"SHA256SUMS entry for {filename} is not 32 bytes")
+        return raw
+    raise _fail(f"SHA256SUMS has no entry for {filename}")
 
 
 def fetch_json(url: str, timeout: int) -> dict[str, Any]:
@@ -276,6 +301,10 @@ def perform_update(check: UpdateCheck, download: Any = None) -> UpdateCheck:
         fetch(check.asset.url, archive)
         if check.asset.sha256 is not None:
             verify_digest(archive, check.asset.sha256)
+        elif check.asset.checksums_url is not None:
+            sums_path = Path(tmpdir) / "SHA256SUMS"
+            fetch(check.asset.checksums_url, sums_path)
+            verify_digest(archive, expected_digest_from_checksums(sums_path.read_text(), check.asset.name))
         pip_install(archive)
     probed = probe_installed_version()
     if compare_versions(probed, check.asset.version) != 0:

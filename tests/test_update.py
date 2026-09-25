@@ -65,6 +65,14 @@ class TestAssetSelection(unittest.TestCase):
         asset = select_update_asset(_meta(), False)
         self.assertEqual(len(asset.sha256 or b""), 32)
 
+    def test_checksums_sibling_attached(self) -> None:
+        meta = _meta(names=("tink_route-0.6.0-py3-none-any.whl", "SHA256SUMS"))
+        for a in meta["assets"]:
+            del a["digest"]
+        asset = select_update_asset(meta, False)
+        self.assertIsNone(asset.sha256)
+        self.assertEqual(asset.checksums_url, "https://example.test/SHA256SUMS")
+
 
 class TestCheckFlow(unittest.TestCase):
     def _check(self, current: str) -> UpdateCheck:
@@ -132,6 +140,61 @@ class TestPerformUpdate(unittest.TestCase):
         self.assertIsNone(done.asset)
         pip.assert_called_once()
         self.assertEqual(seen["url"], "https://example.test/w.whl")
+
+    def test_checksums_manifest_verifies(self) -> None:
+        content = b"fake wheel bytes"
+        hexpart = hashlib.sha256(content).hexdigest()
+        asset = updater.ReleaseAsset(
+            tag="v0.6.0", version="0.6.0", name="w.whl",
+            url="https://example.test/w.whl", sha256=None,
+            checksums_url="https://example.test/SHA256SUMS",
+        )
+        check = UpdateCheck(current="0.5.2", latest="0.6.0", asset=asset)
+
+        def good_fetch(url: str, dest: Path) -> None:
+            if url.endswith("SHA256SUMS"):
+                dest.write_text(f"{hexpart}  w.whl\n")
+            else:
+                dest.write_bytes(content)
+
+        with patch.object(updater, "pip_install"), \
+             patch.object(updater, "probe_installed_version", return_value="0.6.0"):
+            done = updater.perform_update(check, download=good_fetch)
+        self.assertEqual(done.current, "0.6.0")
+
+    def test_checksums_mismatch_aborts(self) -> None:
+        asset = updater.ReleaseAsset(
+            tag="v0.6.0", version="0.6.0", name="w.whl",
+            url="https://example.test/w.whl", sha256=None,
+            checksums_url="https://example.test/SHA256SUMS",
+        )
+        check = UpdateCheck(current="0.5.2", latest="0.6.0", asset=asset)
+
+        def bad_fetch(url: str, dest: Path) -> None:
+            if url.endswith("SHA256SUMS"):
+                dest.write_text("00" * 32 + "  w.whl\n")
+            else:
+                dest.write_bytes(b"tampered bytes")
+
+        with self.assertRaises(UpdateError):
+            updater.perform_update(check, download=bad_fetch)
+
+    def test_checksums_missing_entry_aborts(self) -> None:
+        asset = updater.ReleaseAsset(
+            tag="v0.6.0", version="0.6.0", name="w.whl",
+            url="https://example.test/w.whl", sha256=None,
+            checksums_url="https://example.test/SHA256SUMS",
+        )
+        check = UpdateCheck(current="0.5.2", latest="0.6.0", asset=asset)
+
+        def missing_fetch(url: str, dest: Path) -> None:
+            if url.endswith("SHA256SUMS"):
+                dest.write_text("ab" * 32 + "  other.whl\n")
+            else:
+                dest.write_bytes(b"fake wheel bytes")
+
+        with self.assertRaises(UpdateError):
+            updater.perform_update(check, download=missing_fetch)
 
     def test_probe_mismatch_rejected(self) -> None:
         content = b"fake wheel bytes"

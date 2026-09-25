@@ -11,6 +11,14 @@ from tink_route.metadata import load_library_skills, parse_skill_metadata
 
 class TestTinkRoute(unittest.TestCase):
 
+    def setUp(self):
+        import tempfile
+        self._lib_tmp = tempfile.TemporaryDirectory(prefix="tink-lib-")
+        self._lib_patch = patch("tink_route.cli.DEFAULT_LIBRARY_PATH", Path(self._lib_tmp.name))
+        self._lib_patch.start()
+        self.addCleanup(self._lib_patch.stop)
+        self.addCleanup(self._lib_tmp.cleanup)
+
     def test_parse_frontmatter(self):
         raw = """---
 name: test-skill
