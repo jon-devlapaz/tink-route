@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository follows the [AI-Native SDLC Playbook](/Users/jondev/dev/ai-native-sdlc).
+This repository follows the [AI-Native SDLC Playbook](/Users/jondev/dev/active/ai-native-sdlc).
 
 ## Development Guidelines
 
