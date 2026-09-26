@@ -64,6 +64,8 @@ class TestStageMappings(unittest.TestCase):
     def test_pstack_stage_skillsets_live(self):
         """Verify that all 6 stage skillsets in ~/.tink-library/skillsets resolve with pstack skills."""
         tink_home = get_default_tink_home()
+        if not (tink_home / "skillsets").is_dir():
+            self.skipTest("local pstack skillsets not installed")
 
         plan_members = resolve_skillset_members("planning-skillset", tink_home=tink_home)
         self.assertIn("why", plan_members)
