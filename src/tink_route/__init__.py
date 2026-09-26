@@ -1,6 +1,6 @@
 """tink-route: Dynamic Agent Skill Router using TypeSafe Jev."""
 
-__version__ = "0.5.2"
+__version__ = "0.6.0"
 
 from .adapters.client import JevRouterClient
 from .adapters.executor import DefaultSubprocessExecutor, SubprocessExecutor

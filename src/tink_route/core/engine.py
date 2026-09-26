@@ -145,6 +145,7 @@ class RoutingEngine:
         fits_threshold: float = FITS_THRESHOLD,
         multi: bool = False,
         top_k: int = MULTI_DEFAULT_TOP_K,
+        skillset: str | None = None,
     ) -> RoutingResult:
         """Route task against an already-loaded skill library, optionally installing the winner."""
         if self.client is None:
@@ -163,6 +164,8 @@ class RoutingEngine:
         if not isinstance(res, RoutingResult):
             raise RoutingError("Invalid routing result from client: expected RoutingResult")
         result = res
+        if skillset is not None:
+            result.skillset = skillset
 
         if result.status in ("routed", "multi_routed") and install and result.winner:
             cwd = project_dir or Path.cwd()

@@ -159,6 +159,21 @@ tink-route --json "Audit this codebase architecture"
 }
 ```
 
+### 8. Constrained Routing by Skillset or SDLC Stage (`--skillset` / `--stage`)
+Eliminates cross-phase skill bleed and bounds prompt token evaluation by constraining candidate discovery strictly to member skills of a Tink skillset pin:
+
+```bash
+# Constrain to a specific Tink skillset pin:
+tink-route --skillset testing-skillset -i "Drive and test interactive CLI keyboard inputs"
+
+# Convenience alias for AI-Native SDLC stages:
+tink-route --stage test -i "Verify browser focus and accessibility snapshots"
+```
+
+Supported stage aliases: `plan`, `design`, `build`, `test`, `deploy`, `maintain` (also `01-plan` through `06-maintain`).
+
+When constrained, candidate discovery is pre-filtered against `$TINK_HOME/skillsets/<name>[-skillset].json` (or `.tink-skillset.json`), shrinking Jev tournament batches and preventing stage leakage (e.g. asking an architecture task during Stage 4 cleanly exits with `1`).
+
 ---
 
 ## System Architecture

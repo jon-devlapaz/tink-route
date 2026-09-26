@@ -22,6 +22,16 @@ MULTI_DEFAULT_TOP_K = 3
 MULTI_MAX_TOP_K = 10
 
 
+def get_default_tink_home() -> Path:
+    tink_home = os.environ.get("TINK_HOME")
+    if tink_home:
+        home = Path(tink_home).expanduser()
+        if not home.is_absolute():
+            home = Path.cwd() / home
+        return home
+    return Path.home() / ".tink-library"
+
+
 def get_default_library_path() -> Path:
     tink_home = os.environ.get("TINK_HOME")
     if tink_home:
@@ -30,6 +40,26 @@ def get_default_library_path() -> Path:
             home = Path.cwd() / home
         return home / "skills"
     return Path.home() / ".tink-library" / "skills"
+
+
+STAGE_TO_SKILLSET: dict[str, str] = {
+    "plan": "planning-skillset",
+    "01-plan": "planning-skillset",
+    "planning": "planning-skillset",
+    "design": "design-skillset",
+    "02-design": "design-skillset",
+    "build": "build-skillset",
+    "03-build": "build-skillset",
+    "test": "testing-skillset",
+    "04-test": "testing-skillset",
+    "testing": "testing-skillset",
+    "deploy": "deployment-skillset",
+    "05-deploy": "deployment-skillset",
+    "deployment": "deployment-skillset",
+    "maintain": "maintenance-skillset",
+    "06-maintain": "maintenance-skillset",
+    "maintenance": "maintenance-skillset",
+}
 
 GATE_QUESTIONS = {
     "specialised_workflow": (

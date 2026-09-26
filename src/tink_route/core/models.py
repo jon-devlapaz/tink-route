@@ -8,6 +8,7 @@ from typing import Any
 class RoutingResult:
     status: str
     task: str = ""
+    skillset: str | None = None
     specialist_noul: float | None = None
     threshold: float | None = None
     elapsed_ms: int = 0
@@ -32,6 +33,8 @@ class RoutingResult:
 
     def to_dict(self) -> dict[str, Any]:
         res: dict[str, Any] = {"status": self.status, "task": self.task}
+        if self.skillset is not None:
+            res["skillset"] = self.skillset
         if self.specialist_noul is not None:
             res["specialist_noul"] = self.specialist_noul
         if self.winner is not None:

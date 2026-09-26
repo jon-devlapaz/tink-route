@@ -1,9 +1,10 @@
 """Metadata parsing and library discovery for Agent Skills."""
 
+import json
 from pathlib import Path
 
-from .core.constants import RERANK_BODY_EXCERPT_CHARS
-from .core.exceptions import SkillValidationError
+from .core.constants import RERANK_BODY_EXCERPT_CHARS, get_default_tink_home
+from .core.exceptions import SkillsetError, SkillValidationError
 from .core.validation import is_valid_skill_name
 
 
@@ -136,3 +137,56 @@ def load_library_skills(library_dir: Path) -> list[dict[str, str]]:
             continue
 
     return skills
+
+
+def resolve_skillset_members(
+    skillset_name: str,
+    tink_home: Path | None = None,
+    project_dir: Path | None = None,
+) -> set[str]:
+    """Resolve member skill names from a skillset pin or directory.
+
+    Checks:
+    1. $TINK_HOME/skillsets/<canonical>.json
+    2. $TINK_HOME/skillsets/<bare>.json
+    3. $TINK_HOME/skillsets/<canonical>/.tink-skillset.json
+    4. $TINK_HOME/skillsets/<bare>/.tink-skillset.json
+    5. <project_dir>/.agents/skills/<canonical>/.tink-skillset.json
+    6. <project_dir>/.agents/skills/<bare>/.tink-skillset.json
+    """
+    clean_name = skillset_name.strip()
+    bare = clean_name[:-9] if clean_name.endswith("-skillset") else clean_name
+    canonical = f"{bare}-skillset"
+
+    if not is_valid_skill_name(bare):
+        raise SkillsetError(f"Invalid skillset name: '{skillset_name}'")
+
+    home = tink_home or get_default_tink_home()
+    skillset_dir = home / "skillsets"
+
+    candidates = [
+        skillset_dir / f"{canonical}.json",
+        skillset_dir / f"{bare}.json",
+        skillset_dir / canonical / ".tink-skillset.json",
+        skillset_dir / bare / ".tink-skillset.json",
+    ]
+    if project_dir is not None:
+        candidates.extend([
+            project_dir / ".agents" / "skills" / canonical / ".tink-skillset.json",
+            project_dir / ".agents" / "skills" / bare / ".tink-skillset.json",
+        ])
+
+    for candidate in candidates:
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+            except Exception as e:
+                raise SkillsetError(f"Malformed skillset file '{candidate}': {e}") from e
+            members = data.get("members")
+            if not isinstance(members, list):
+                raise SkillsetError(f"Skillset file '{candidate}' missing 'members' array")
+            return set(members)
+
+    raise SkillsetError(
+        f"Skillset '{skillset_name}' not found. Searched under {skillset_dir}"
+    )

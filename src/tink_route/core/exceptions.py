@@ -25,5 +25,9 @@ class SkillValidationError(TinkRouteError, ValueError):
     """Raised when a skill name or path fails security validation."""
 
 
+class SkillsetError(TinkRouteError, ValueError):
+    """Raised when a skillset pin or definition is missing or invalid."""
+
+
 class LockError(LedgerError, RuntimeError):
     """Raised when acquiring or releasing a ledger lock fails."""

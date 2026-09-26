@@ -11,10 +11,16 @@ from . import __version__
 from .adapters.executor import DefaultSubprocessExecutor
 from .adapters.ledger import default_ledger
 from .adapters.client import DEFAULT_MODEL, DEFAULT_THRESHOLD, JevRouterClient
-from .core.constants import FITS_THRESHOLD, MULTI_DEFAULT_TOP_K, get_default_library_path
+from .core.constants import (
+    FITS_THRESHOLD,
+    MULTI_DEFAULT_TOP_K,
+    STAGE_TO_SKILLSET,
+    get_default_library_path,
+    get_default_tink_home,
+)
 from .core.engine import RoutingEngine
 from .core.models import InstallOutcome, RoutingResult
-from .metadata import load_library_skills
+from .metadata import load_library_skills, resolve_skillset_members
 
 DEFAULT_LIBRARY_PATH = get_default_library_path()
 _DEFAULT_EXECUTOR = DefaultSubprocessExecutor()
@@ -127,6 +133,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--check",
         action="store_true",
         help="With the 'update' task: only check for a newer release, do not install.",
+    )
+    parser.add_argument(
+        "--skillset",
+        help="Constrain routing candidates to member skills of a Tink skillset pin or installed skillset.",
+    )
+    parser.add_argument(
+        "--stage",
+        choices=[
+            "plan", "01-plan", "planning",
+            "design", "02-design",
+            "build", "03-build",
+            "test", "04-test", "testing",
+            "deploy", "05-deploy", "deployment",
+            "maintain", "06-maintain", "maintenance",
+        ],
+        help="Convenience alias: constrain candidates to the SDLC stage's skillset.",
     )
     return parser
 
@@ -307,6 +329,27 @@ def main() -> int:
         else:
             print(f"Error: {err['error']}", file=sys.stderr)
         return 2
+
+    target_skillset = args.skillset
+    if not target_skillset and args.stage:
+        target_skillset = STAGE_TO_SKILLSET.get(args.stage)
+
+    allowed_members = None
+    if target_skillset:
+        try:
+            allowed_members = resolve_skillset_members(
+                target_skillset,
+                tink_home=get_default_tink_home(),
+                project_dir=Path.cwd(),
+            )
+        except Exception as e:
+            err = {"error": f"Failed to resolve skillset '{target_skillset}': {e}"}
+            if args.json:
+                print(json.dumps(err))
+            else:
+                print(f"Error: {err['error']}", file=sys.stderr)
+            return 2
+
     try:
         skills = load_library_skills(args.library)
     except Exception as e:
@@ -316,13 +359,22 @@ def main() -> int:
         else:
             print(f"Error: {err['error']}", file=sys.stderr)
         return 2
+
+    if allowed_members is not None:
+        skills = [s for s in skills if s["name"] in allowed_members]
+
     if not skills:
-        err = {"error": f"No skills found in library directory: {args.library}"}
+        msg = (
+            f"No candidate skills from skillset '{target_skillset}' were found in library: {args.library}"
+            if target_skillset
+            else f"No skills found in library directory: {args.library}"
+        )
+        err = {"error": msg}
         if args.json:
             print(json.dumps(err))
         else:
             print(f"Error: {err['error']}", file=sys.stderr)
-        return 2
+        return 1 if target_skillset else 2
 
     client = JevRouterClient(api_key=api_key, model=args.model)
     engine = RoutingEngine(
@@ -343,6 +395,7 @@ def main() -> int:
             fits_threshold=args.fits_threshold,
             multi=args.multi,
             top_k=args.top_k,
+            skillset=target_skillset,
         )
     except Exception as e:
         err = {"error": str(e)}
