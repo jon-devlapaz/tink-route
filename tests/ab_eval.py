@@ -5,13 +5,12 @@ Measures prompt token footprint, routing accuracy, false positive rate, and late
 """
 
 import json
-import os
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 # Paths
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -152,11 +151,11 @@ def main():
     prompt_block = build_control_prompt_block(LIBRARY_DIR)
     control_token_overhead = estimate_tokens(prompt_block)
 
-    print(f"\n[Environment Setup]")
+    print("\n[Environment Setup]")
     print(f"• Control Sandbox:   {CONTROL_DIR} (Simulates Progressive Disclosure)")
     print(f"• Treatment Sandbox: {TREATMENT_DIR} (Simulates Dynamic tink-route)")
     print(f"• Control Prompt Overhead per Turn: ~{control_token_overhead:,} tokens (46 skills in XML)")
-    print(f"• Treatment Base Prompt Overhead:    0 tokens\n")
+    print("• Treatment Base Prompt Overhead:    0 tokens\n")
 
     results = []
     treatment_total_ms = 0
@@ -210,7 +209,7 @@ def main():
     print(f"• Treatment False Positive Rate: {treatment_false_positives}/3 (0.0% on negative controls)")
     print(f"• Treatment Mean Latency:        {avg_latency:.1f} ms")
     print(f"• Control Static Token Overhead: {control_token_overhead} tokens/turn (100% token tax on all turns)")
-    print(f"• Treatment Token Overhead:      0 tokens/turn on non-specialist tasks")
+    print("• Treatment Token Overhead:      0 tokens/turn on non-specialist tasks")
 
     # Write report
     report_path = Path("/Users/jondev/ab_eval_results.json")
