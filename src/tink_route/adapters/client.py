@@ -194,12 +194,14 @@ class JevRouterClient:
         criteria: dict[str, str] = {}
         questions: dict[str, Any] = {}
         for name in shortlist_names:
-            criteria[name] = self._skill_excerpt(skill_by_name[name])
+            excerpt = self._skill_excerpt(skill_by_name[name])
+            criteria[name] = excerpt
             questions[f"fits::{name}"] = {
                 "type": "noul",
                 "instructions": (
-                    f"Does the skill '{name}' do the specific thing the user's request asks for? "
-                    "Judge from the skill's actual description and instructions, not its name."
+                    "Does this skill do the specific thing the user's request asks for? "
+                    f"Skill '{name}': {excerpt} "
+                    "Judge from the skill's actual description and instructions above, not its name."
                 ),
             }
         criteria[NO_SKILL_SENTINEL] = (

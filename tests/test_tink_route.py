@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 from tink_route.adapters.client import JevRouterClient
 from tink_route.cli import install_skill
-from tink_route.core.constants import get_default_library_path
 from tink_route.core.models import InstallOutcome, PruneReport, RoutingResult
 from tink_route.metadata import load_library_skills, parse_skill_metadata
 

@@ -148,7 +148,6 @@ class TestCliFixes(unittest.TestCase):
         self.assertIn("not found or not a directory", err)
 
     def test_version_subcommand_plain(self) -> None:
-        import json
         from tink_route import __version__
         with tempfile.TemporaryDirectory() as td:
             code, out, err = self._run_main(["tink-route", "version"], Path(td))
