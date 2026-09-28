@@ -23,6 +23,7 @@ from .core.models import InstallOutcome, RoutingResult
 from .metadata import load_library_skills, resolve_skillset_members
 
 DEFAULT_LIBRARY_PATH = get_default_library_path()
+CONTRACT_VERSION = 1
 _DEFAULT_EXECUTOR = DefaultSubprocessExecutor()
 _DEFAULT_ENGINE = RoutingEngine(executor=_DEFAULT_EXECUTOR, ledger=default_ledger)
 
@@ -150,7 +151,34 @@ def build_parser() -> argparse.ArgumentParser:
         ],
         help="Convenience alias: constrain candidates to the SDLC stage's skillset.",
     )
+    parser.add_argument(
+        "--deadline",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Per-API-call timeout in seconds; disables retries (used by tink-hook).",
+    )
     return parser
+
+
+def _contract_json(result: RoutingResult, skills: list[dict]) -> dict:
+    """Router JSON plus the additive activation contract. Never includes skill content."""
+    out = result.to_dict()
+    out["contract_version"] = CONTRACT_VERSION
+    if result.status in ("routed", "multi_routed") and result.winner:
+        has_scripts = False
+        for skill in skills:
+            if skill.get("name") == result.winner and skill.get("path"):
+                skill_path = Path(skill["path"])
+                has_scripts = skill_path.name == "SKILL.md" and (skill_path.parent / "scripts").is_dir()
+                break
+        out["action"] = {
+            "type": "mount_and_inject" if has_scripts else "inject",
+            "mount_command": f"tink mount {result.winner} --json --payload",
+        }
+    else:
+        out["action"] = {"type": "none", "mount_command": None}
+    return out
 
 
 def _print_install_followup(result: RoutingResult, installing: bool) -> None:
@@ -380,7 +408,18 @@ def main() -> int:
             print(f"Error: {err['error']}", file=sys.stderr)
         return 1 if target_skillset else 2
 
-    client = JevRouterClient(api_key=api_key, model=args.model)
+    if args.deadline is not None and not (0 < args.deadline <= 600):
+        err = {"error": "--deadline must be between 0 and 600 seconds."}
+        if args.json:
+            print(json.dumps(err))
+        else:
+            print(f"Error: {err['error']}", file=sys.stderr)
+        return 2
+
+    if args.deadline is not None:
+        client = JevRouterClient(api_key=api_key, model=args.model, timeout=args.deadline, max_retries=0)
+    else:
+        client = JevRouterClient(api_key=api_key, model=args.model)
     engine = RoutingEngine(
         client=client,
         executor=_DEFAULT_EXECUTOR,
@@ -416,7 +455,7 @@ def main() -> int:
     )
 
     if args.json:
-        print(json.dumps(result.to_dict(), indent=2))
+        print(json.dumps(_contract_json(result, skills), indent=2))
     else:
         _print_route(result, installing=args.install)
 

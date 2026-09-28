@@ -65,13 +65,31 @@ class Ranking:
 class JevRouterClient:
     """HTTP client communicating with TypeSafe Jev reasoning models."""
 
-    def __init__(self, api_key: str, model: str = DEFAULT_MODEL, api_url: str = TYPESAFE_API_URL):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = DEFAULT_MODEL,
+        api_url: str = TYPESAFE_API_URL,
+        timeout: float = 10,
+        max_retries: int = 3,
+    ):
         self.api_key = api_key
         self.model = model
         self.api_url = api_url
+        self.timeout = timeout
+        self.max_retries = max_retries
 
-    def _call_api(self, payload: dict[str, Any], timeout: int = 10, max_retries: int = 3) -> dict[str, Any]:
+    def _call_api(
+        self,
+        payload: dict[str, Any],
+        timeout: float | None = None,
+        max_retries: int | None = None,
+    ) -> dict[str, Any]:
         """Execute HTTP request with retry/backoff for transient errors (PROTO-1, PROTO-2)."""
+        if timeout is None:
+            timeout = self.timeout
+        if max_retries is None:
+            max_retries = self.max_retries
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             self.api_url,

@@ -39,3 +39,4 @@ venv.bak/
 .agents/
 .coverage
 .coverage.*
+target/
