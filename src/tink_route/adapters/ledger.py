@@ -29,6 +29,10 @@ _REGISTRY_LOCK = threading.Lock()
 _PROJECT_LOCKS: dict[Path, tuple[threading.RLock, int, int | None]] = {}
 
 
+class LedgerCorruptError(RuntimeError):
+    """The ephemeral ledger exists but cannot be trusted; never overwrite it."""
+
+
 class FilesystemLedger:
     """Encapsulates .tink/ephemeral.json, ephemeral.lock, and skills.toml interactions."""
 
@@ -107,19 +111,27 @@ class FilesystemLedger:
                 thread_lock.release()
 
     def load_ephemeral_skills(self, project_dir: Path) -> list[str]:
+        """Load tracked skills. Missing ledger is empty; a corrupt one raises LedgerCorruptError."""
         ledger_file = project_dir / ".tink" / "ephemeral.json"
         if not ledger_file.is_file():
             return []
+        hint = f"Fix or remove {ledger_file} and retry."
         try:
             data = json.loads(ledger_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return []
-            raw_skills = data.get("skills")
-            if not isinstance(raw_skills, list):
-                return []
-            return [s for s in raw_skills if isinstance(s, str)]
-        except Exception:
-            return []
+        except (OSError, ValueError) as exc:
+            raise LedgerCorruptError(f"Ephemeral ledger .tink/ephemeral.json is unreadable ({exc}). {hint}") from exc
+        if not isinstance(data, dict):
+            raise LedgerCorruptError(f"Ephemeral ledger .tink/ephemeral.json is not a JSON object. {hint}")
+        if "version" in data and data["version"] != 1:
+            raise LedgerCorruptError(
+                f"Ephemeral ledger .tink/ephemeral.json has unknown version {data['version']!r}. {hint}"
+            )
+        raw_skills = data.get("skills")
+        if not isinstance(raw_skills, list) or not all(isinstance(s, str) for s in raw_skills):
+            raise LedgerCorruptError(
+                f"Ephemeral ledger .tink/ephemeral.json 'skills' must be a list of strings. {hint}"
+            )
+        return list(raw_skills)
 
     def _write_ephemeral_json(self, project_dir: Path, skills: list[str]) -> None:
         """Atomic write using tempfile, fsync, and replace (CONC-4, CONC-5)."""

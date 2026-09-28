@@ -123,6 +123,9 @@ class RoutingEngine:
     def install_and_track(self, skill_name: str, project_dir: Path, track: bool = True) -> InstallOutcome:
         """Install skill and record in ephemeral ledger under a single project lock."""
         with self.ledger.lock(project_dir):
+            if track:
+                # Refuse a corrupt ledger before mutating anything.
+                self.ledger.load_ephemeral_skills(project_dir)
             outcome = self.install_skill_locked(skill_name, project_dir)
             if not outcome.success or not track or outcome.was_pre_existing:
                 return outcome
