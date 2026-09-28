@@ -309,9 +309,13 @@ def main() -> int:
             print(f"tink-route {__version__}")
         return 0
 
-    if not args.task:
-        parser.print_help()
-        return 1
+    if not args.task or not args.task.strip():
+        msg = "A task description is required."
+        if args.json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(f"tink-route: error: {msg} Try: tink-route \"<task>\" (see --help).", file=sys.stderr)
+        return 2
 
     api_key = os.environ.get("TYPESAFE_API_KEY")
     if not api_key:

@@ -344,6 +344,7 @@ description: A skill without explicit name.
         """Critique P2.1: Malformed ephemeral.json does not raise TypeError."""
         import tempfile
         from tink_route import load_ephemeral_skills, prune_ephemeral_skills
+        from tink_route.adapters.ledger import LedgerCorruptError
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
@@ -351,16 +352,14 @@ description: A skill without explicit name.
             tink_dir.mkdir()
             ledger = tink_dir / "ephemeral.json"
 
-            # null skills list
-            ledger.write_text('{"skills": null}')
-            self.assertEqual(load_ephemeral_skills(tmppath), [])
-            # Prune should not raise
-            res = prune_ephemeral_skills(tmppath)
-            self.assertEqual(res.pruned, [])
-
-            # unhashable elements in skills
-            ledger.write_text('{"skills": [{}]}')
-            self.assertEqual(load_ephemeral_skills(tmppath), [])
+            # Wrong-shape ledgers are refused (not treated as empty) and left untouched.
+            for raw in ('{"skills": null}', '{"skills": [{}]}'):
+                ledger.write_text(raw)
+                with self.assertRaises(LedgerCorruptError):
+                    load_ephemeral_skills(tmppath)
+                with self.assertRaises(LedgerCorruptError):
+                    prune_ephemeral_skills(tmppath)
+                self.assertEqual(ledger.read_text(), raw)
 
     def test_frontmatter_strips_quotes(self):
         """Critique P2.3: parse_skill_metadata strips surrounding quotes from name and description."""

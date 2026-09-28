@@ -64,10 +64,12 @@ STAGE_TO_SKILLSET: dict[str, str] = {
 GATE_QUESTIONS = {
     "specialised_workflow": (
         "Is the actual task a specialised workflow rather than an ordinary reply? "
-        "A specialised workflow produces a structured deliverable or inspects, transforms, "
-        "or modifies a document, dataset, codebase, or system using task-specific procedures. "
-        "Document-level work counts even when its result is prose and no external tool is necessary. "
-        "An ordinary reply is conversation, a general explanation, arithmetic, or an isolated short text transformation."
+        "A specialised workflow follows a task-specific procedure. It produces a structured deliverable; "
+        "inspects, transforms, or modifies a document, dataset, codebase, or system; or shapes its answer "
+        "by a method, framing, or audience level of understanding that the user explicitly asks for. "
+        "It counts even when the result is prose and no external tool is necessary. "
+        "An ordinary reply is conversation, a plain factual answer or explanation with no requested method "
+        "or audience, arithmetic, a short creative piece, or an isolated short text transformation."
     ),
 }
 

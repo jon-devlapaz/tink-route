@@ -114,15 +114,16 @@ class TestCliFixes(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Warning", err)
 
-    def test_all_unpinned_with_corrupt_ledger_warns(self) -> None:
+    def test_all_unpinned_with_corrupt_ledger_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmppath = Path(td)
             tink = tmppath / ".tink"
             tink.mkdir()
             (tink / "ephemeral.json").write_text("{corrupt")
             code, _, err = self._run_main(["tink-route", "prune", "--all-unpinned", "--dry-run"], tmppath)
-        self.assertEqual(code, 0)
-        self.assertIn("Warning", err)
+            self.assertEqual((tink / "ephemeral.json").read_text(), "{corrupt")
+        self.assertEqual(code, 2)
+        self.assertIn(".tink/ephemeral.json", err)
 
     def test_all_unpinned_with_empty_ledger_warns(self) -> None:
         with tempfile.TemporaryDirectory() as td:
