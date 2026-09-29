@@ -99,7 +99,7 @@ _ROUTING_FIXES = {
                        "$TINK_HOME/skills; override with --library)",
     "library_unreadable": "the skill library could not be read (run `tink doctor`)",
     "skillset_error": "the skillset could not be resolved (see `tink skillset list` or check the pin "
-                      "under $TINK_HOME/skillsets)",
+                      "under .tink/skillsets or $TINK_HOME/skillsets)",
 }
 
 _APPROVE = "review it, then run `tink library approve {name}`"
