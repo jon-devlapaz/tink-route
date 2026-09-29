@@ -59,6 +59,8 @@ pip install -e .
 export TYPESAFE_API_KEY="your_api_key_here"
 ```
 
+> **Recommended:** agent-initiated skills via `tink-route --use "<task>"` (see section 9). The persistent-install flow (`-i`, `--prune`, sections 3-6) is legacy and deprecated; those modes print a one-time stderr note.
+
 ### 2. Inspect / Recommend (Read-Only)
 By default, `tink-route` respects Tink's separation of inspection vs. mutation authority:
 
@@ -192,9 +194,11 @@ tink-route --use --skillset testing-skillset --json "write a regression test tha
 - **Stage is a hint, not a wall:** if the stage skillset yields no skill, `--use` retries once over the whole library (still excluding that stage's `required` disciplines), and the header says `outside the <skillset> skillset`. Pass `--stage-only` to disable the retry. Real example: `--stage build` finds `blast-radius`, which lives in the design skillset.
 - **Exit codes:** `0` skill delivered, `1` no specialist skill applies, `2` selected but could not be delivered (refused mount, missing `tink`, router failure) or usage error (`--use` cannot be combined with `-i`, `--prune`, `--multi`).
 - **Delivery:** skills up to `--inline-max` chars (default 12000) are printed in full under a one-line header (`# tink skill: <name>  (digest, chars, confidence)`). Larger ones are mounted with `tink mount <name>` and the output points at `.tink/.active/<name>/SKILL.md`; content is never truncated.
-- **Fail open:** any problem prints one line ("...proceed without it.") and exits non-zero; partial skill content is never printed after a refusal.
+- **Fail open:** any problem prints one plain-language line with the fix and exits non-zero; partial skill content is never printed after a refusal. Examples: `TYPESAFE_API_KEY is not set; set it to enable skill routing, proceed without a skill.` and ``Skill 'x' was selected but could not be delivered: it is not approved (review it, then run `tink library approve x`); proceed without it.`` The stable reason slug (`no_api_key`, `unapproved`, `digest_mismatch`, ...) stays in `--json` `reason` and in receipts.
+- **Usage errors:** any argument error prints exactly two stderr lines (`tink-route: error: ...` and a `Try:` hint) and exits 2.
+- **Legacy:** `-i/--install` and `--prune` (and their helper flags) are deprecated in favour of `--use`; they still work, print ``note: persistent install (-i/--prune) is deprecated; prefer `tink-route --use`.`` once per process on stderr, and are listed last in `--help`.
 - **`--json`:** `{contract_version, status: delivered|no_skill|error, skill, tree_digest, chars, delivery: inline|path|none, path, confidence, content, reason, scope: skillset|library}`.
-- **Receipts:** `--receipt PATH` (or `TINK_ROUTE_RECEIPT`) appends one JSON line per invocation (`ts, task, skillset, status, skill, tree_digest, chars, delivery, confidence, reason, scope`), including no-skill and error outcomes. Writes use `O_APPEND` under `flock` on `PATH.lock`; symlinked receipt paths are refused; a receipt failure only prints a stderr warning and never changes stdout or the exit code.
+- **Receipts:** `--receipt PATH` (or `TINK_ROUTE_RECEIPT`) appends one JSON line per invocation (`ts, task, skillset, status, skill, tree_digest, chars, delivery, confidence, reason, scope`), including no-skill and error outcomes. Writes use `O_APPEND` under `flock` on the receipt file itself (no `.lock` sidecar); symlinked receipt paths are refused; a receipt failure only prints a stderr warning and never changes stdout or the exit code.
 
 ---
 

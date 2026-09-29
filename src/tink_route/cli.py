@@ -38,11 +38,35 @@ def _install_skill_locked(skill_name: str, cwd: Path) -> InstallOutcome:
     return _DEFAULT_ENGINE.install_skill_locked(skill_name, cwd)
 
 
+class _TinkRouteParser(argparse.ArgumentParser):
+    """Usage errors print two short stderr lines instead of the full usage dump."""
+
+    def error(self, message: str):  # type: ignore[override]
+        self.exit(
+            2,
+            f"tink-route: error: {message}\n"
+            'Try: tink-route --help  (agent-initiated skills: tink-route --use "<task>")\n',
+        )
+
+
+_LEGACY_NOTED = False
+_LEGACY_NOTE = "note: persistent install (-i/--prune) is deprecated; prefer `tink-route --use`."
+
+
+def _note_legacy() -> None:
+    """Print the deprecation note to stderr once per process."""
+    global _LEGACY_NOTED
+    if not _LEGACY_NOTED:
+        _LEGACY_NOTED = True
+        print(_LEGACY_NOTE, file=sys.stderr)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _TinkRouteParser(
         prog="tink-route",
         description="Dynamic Agent Skill Router using TypeSafe Jev.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
         epilog=(
             "Agent-initiated skills (--use):\n"
             "  Add one line to AGENTS.md:\n"
@@ -53,102 +77,30 @@ def build_parser() -> argparse.ArgumentParser:
             "  Skillset `required` disciplines are never offered (tink use already compiled them)."
         ),
     )
-    parser.add_argument(
+    use_g = parser.add_argument_group("Agent-initiated skills (recommended)")
+    legacy_g = parser.add_argument_group("Legacy: persistent install (deprecated; prefer --use)")
+    other_g = parser.add_argument_group("Other options")
+
+    other_g.add_argument("-h", "--help", action="help", help="Show this help message and exit.")
+    other_g.add_argument(
         "-v",
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
     )
-    parser.add_argument(
+    use_g.add_argument(
         "task",
         nargs="?",
         help="The task description to evaluate, or 'prune', 'update', or 'version'.",
     )
-    parser.add_argument(
-        "--prune",
+    use_g.add_argument(
+        "--use",
         action="store_true",
-        help="Prune ephemeral/unpinned skills from .agents/skills/.",
+        help="Agent-initiated skill: route the task, verify the winner with `tink mount --payload`, "
+        "and print its instructions to stdout. Exit 0 delivered, 1 no skill applies, 2 could not deliver. "
+        "Fails open: on any problem, proceed without a skill.",
     )
-    parser.add_argument(
-        "--all-unpinned",
-        action="store_true",
-        help="In prune mode, sweep all unpinned skills (including manual installs) rather than ledger-only.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview skills eligible for pruning without removing them.",
-    )
-    parser.add_argument(
-        "--ephemeral",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Track installed skill in .tink/ephemeral.json for automatic pruning (default: true).",
-    )
-    parser.add_argument(
-        "-i",
-        "--install",
-        action="store_true",
-        help="Automatically install the winning skill into .agents/skills/ via `tink skill add`.",
-    )
-    parser.add_argument(
-        "--threshold",
-        type=float,
-        default=DEFAULT_THRESHOLD,
-        help=f"Minimum confidence/probability threshold (default: {DEFAULT_THRESHOLD}).",
-    )
-    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON.")
-    parser.add_argument(
-        "--library",
-        type=Path,
-        default=None,
-        help="Path to Tink skill library directory (default: ~/.tink-library/skills or $TINK_HOME/skills).",
-    )
-    parser.add_argument(
-        "--model",
-        default=DEFAULT_MODEL,
-        help=f"Pinned TypeSafe Jev model identifier (default: {DEFAULT_MODEL}).",
-    )
-    parser.add_argument(
-        "--tri-gate",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Ask the specialised-workflow gate on the first ranking call (default: true).",
-    )
-    parser.add_argument(
-        "--rerank",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Rerank the top Stage 2 candidates using SKILL.md excerpts and fits nouls (default: true).",
-    )
-    parser.add_argument(
-        "--fits-threshold",
-        type=float,
-        default=FITS_THRESHOLD,
-        help=f"Minimum per-skill fits noul required to accept a reranked winner (default: {FITS_THRESHOLD}).",
-    )
-    parser.add_argument(
-        "--multi",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Return a ranked list of qualifying skills instead of a single winner.",
-    )
-    parser.add_argument(
-        "--top-k",
-        type=int,
-        default=MULTI_DEFAULT_TOP_K,
-        help=f"Maximum skills to return with --multi (default: {MULTI_DEFAULT_TOP_K}).",
-    )
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="With the 'update' task: only check for a newer release, do not install.",
-    )
-    parser.add_argument(
-        "--skillset",
-        help="Constrain routing candidates to member skills of a Tink skillset pin or installed skillset.",
-    )
-    parser.add_argument(
+    use_g.add_argument(
         "--stage",
         choices=[
             "plan", "01-plan", "planning",
@@ -160,27 +112,24 @@ def build_parser() -> argparse.ArgumentParser:
         ],
         help="Convenience alias: constrain candidates to the SDLC stage's skillset.",
     )
-    parser.add_argument(
-        "--use",
-        action="store_true",
-        help="Agent-initiated skill: route the task, verify the winner with `tink mount --payload`, "
-        "and print its instructions to stdout. Exit 0 delivered, 1 no skill applies, 2 could not deliver. "
-        "Fails open: on any problem, proceed without a skill.",
+    use_g.add_argument(
+        "--skillset",
+        help="Constrain routing candidates to member skills of a Tink skillset pin or installed skillset.",
     )
-    parser.add_argument(
+    use_g.add_argument(
+        "--stage-only",
+        action="store_true",
+        help="With --use and --stage/--skillset: do not fall back to the whole library when the "
+        "skillset yields no skill.",
+    )
+    use_g.add_argument(
         "--receipt",
         type=Path,
         default=None,
         metavar="PATH",
         help="With --use: append one JSON line per invocation to PATH (env: TINK_ROUTE_RECEIPT).",
     )
-    parser.add_argument(
-        "--stage-only",
-        action="store_true",
-        help="With --use and --stage/--skillset: do not fall back to the whole library when the "
-        "skillset yields no skill.",
-    )
-    parser.add_argument(
+    use_g.add_argument(
         "--inline-max",
         type=int,
         default=12000,
@@ -188,12 +137,96 @@ def build_parser() -> argparse.ArgumentParser:
         help="With --use: skills up to N chars are printed inline, larger ones are mounted and "
         "read by path (default: 12000).",
     )
-    parser.add_argument(
+    use_g.add_argument("--json", action="store_true", help="Output machine-readable JSON.")
+    use_g.add_argument(
         "--deadline",
         type=float,
         default=None,
         metavar="SECONDS",
         help="Per-API-call timeout in seconds; disables retries.",
+    )
+    use_g.add_argument(
+        "--library",
+        type=Path,
+        default=None,
+        help="Path to Tink skill library directory (default: ~/.tink-library/skills or $TINK_HOME/skills).",
+    )
+    use_g.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Pinned TypeSafe Jev model identifier (default: {DEFAULT_MODEL}).",
+    )
+
+    legacy_g.add_argument(
+        "-i",
+        "--install",
+        action="store_true",
+        help="[deprecated] Automatically install the winning skill into .agents/skills/ via `tink skill add`.",
+    )
+    legacy_g.add_argument(
+        "--prune",
+        action="store_true",
+        help="[deprecated] Prune ephemeral/unpinned skills from .agents/skills/.",
+    )
+    legacy_g.add_argument(
+        "--all-unpinned",
+        action="store_true",
+        help="[deprecated] In prune mode, sweep all unpinned skills (including manual installs) "
+        "rather than ledger-only.",
+    )
+    legacy_g.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="[deprecated] Preview skills eligible for pruning without removing them.",
+    )
+    legacy_g.add_argument(
+        "--ephemeral",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="[deprecated] Track installed skill in .tink/ephemeral.json for automatic pruning "
+        "(default: true).",
+    )
+    legacy_g.add_argument(
+        "--multi",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="[deprecated] Return a ranked list of qualifying skills instead of a single winner.",
+    )
+    legacy_g.add_argument(
+        "--top-k",
+        type=int,
+        default=MULTI_DEFAULT_TOP_K,
+        help=f"[deprecated] Maximum skills to return with --multi (default: {MULTI_DEFAULT_TOP_K}).",
+    )
+    legacy_g.add_argument(
+        "--check",
+        action="store_true",
+        help="[deprecated] With the 'update' task: only check for a newer release, do not install.",
+    )
+
+    other_g.add_argument(
+        "--threshold",
+        type=float,
+        default=DEFAULT_THRESHOLD,
+        help=f"Minimum confidence/probability threshold (default: {DEFAULT_THRESHOLD}).",
+    )
+    other_g.add_argument(
+        "--tri-gate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Ask the specialised-workflow gate on the first ranking call (default: true).",
+    )
+    other_g.add_argument(
+        "--rerank",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Rerank the top Stage 2 candidates using SKILL.md excerpts and fits nouls (default: true).",
+    )
+    other_g.add_argument(
+        "--fits-threshold",
+        type=float,
+        default=FITS_THRESHOLD,
+        help=f"Minimum per-skill fits noul required to accept a reranked winner (default: {FITS_THRESHOLD}).",
     )
     return parser
 
@@ -298,6 +331,9 @@ def main(argv: Optional[list[str]] = None, *, route_fn=None) -> int:
         from .use import run_use
 
         return run_use(args, route_fn=route_fn, executor=_DEFAULT_EXECUTOR)
+
+    if args.install or args.prune or args.task == "prune":
+        _note_legacy()
 
     # Handle prune command (either `tink-route prune` or `tink-route --prune`)
     if args.task == "prune" or args.prune:
