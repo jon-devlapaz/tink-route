@@ -64,7 +64,7 @@ def route(lib: Path, task: str) -> dict:
     )
     p = subprocess.run(
         [sys.executable, "-c",
-         "import os, sys; sys.argv=['tink-route', '--json', '--library', "
+         "import os, sys; sys.argv=['tink-route', '--pick', '--json', '--library', "
          "os.environ['TINK_E2E_LIB'], os.environ['TINK_E2E_TASK']]; "
          "from tink_route.cli import main; main()"],
         capture_output=True, text=True, cwd=str(REPO), env=env, check=False,

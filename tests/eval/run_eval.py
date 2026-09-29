@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Routing eval: labelled prompts -> tink-route -> metrics, with Jev as independent judge.
+"""Routing eval: labelled prompts -> tink-route --pick -> metrics, with Jev as independent judge.
 
 Measures, per router config: latency p50/p95, hit / acceptable / misroute / miss rates on
 positives, false-injection rate on negatives. For every routed prompt that is NOT the labelled
@@ -58,7 +58,7 @@ def route(lib: Path, task: str, extra: list[str]) -> tuple[dict, float]:
     t0 = time.perf_counter()
     p = subprocess.run(
         [sys.executable, "-c", "import sys; from tink_route.cli import main; sys.exit(main())",
-         "--json", "--library", str(lib), *extra, task],
+         "--pick", "--json", "--library", str(lib), *extra, task],
         capture_output=True, text=True, env=env, cwd=str(REPO), check=False,
     )
     dt = time.perf_counter() - t0
@@ -127,7 +127,7 @@ def main() -> int:
             for r in rows:
                 res, dt = route(lib, r["prompt"], extra)
                 lat.append(dt)
-                routed = res.get("status") in ("routed", "multi_routed")
+                routed = res.get("status") == "routed"
                 winner = res.get("winner") if routed else None
                 exp, acc = r["expected"], set(r["acceptable"])
                 rec = {"id": r["id"], "category": r["category"], "expected": exp, "winner": winner,

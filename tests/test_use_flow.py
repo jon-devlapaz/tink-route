@@ -1,4 +1,4 @@
-"""In-process E2E for `tink-route --use`.
+"""In-process E2E for `tink-route` (delivery and `--pick`).
 
 The routing decision is faked through the injectable `route_fn` seam; everything
 else (mounting, approval, digest verification) is the REAL sibling `tink` binary
@@ -59,6 +59,7 @@ class UseFlowCase(unittest.TestCase):
         os.chdir(self.proj)
         self.addCleanup(os.chdir, self.prev)
         self.seen: list[list[str]] = []
+        self.tasks: list[str] = []
 
     # helpers
     def add_skill(self, name: str, body: str = "Do the thing.", desc: str | None = None) -> Path:
@@ -81,6 +82,7 @@ class UseFlowCase(unittest.TestCase):
     def router(self, status="routed", winner="alpha", confidence=0.91):
         def fn(task, skills, args):
             self.seen.append([s["name"] for s in skills])
+            self.tasks.append(task)
             return RoutingResult(status=status, task=task,
                                  winner=winner if status == "routed" else None,
                                  confidence=confidence, probability=confidence)
@@ -104,7 +106,7 @@ class TestDelivery(UseFlowCase):
     def test_inline_exact_header_and_payload(self) -> None:
         self.add_skill("alpha", "Step 1. Step 2.")
         self.approve()
-        code, out, _ = self.run_cli(["--use", "do alpha stuff"])
+        code, out, _ = self.run_cli(["do alpha stuff"])
         self.assertEqual(code, 0)
         content = (self.home / "skills/alpha/SKILL.md").read_text()
         digest = self.real_digest("alpha")
@@ -118,7 +120,7 @@ class TestDelivery(UseFlowCase):
     def test_large_skill_delivered_by_path_without_content(self) -> None:
         self.add_skill("alpha", "SECRET-BODY " * 50)
         self.approve()
-        code, out, _ = self.run_cli(["--use", "--inline-max", "100", "do alpha stuff"])
+        code, out, _ = self.run_cli(["--inline-max", "100", "do alpha stuff"])
         self.assertEqual(code, 0)
         self.assertNotIn("SECRET-BODY", out)
         self.assertIn("# tink skill: alpha  (digest sha256:", out)
@@ -132,9 +134,9 @@ class TestDelivery(UseFlowCase):
         self.add_skill("alpha", "x")
         self.approve()
         n = len((self.home / "skills/alpha/SKILL.md").read_text())
-        _, out, _ = self.run_cli(["--use", "--inline-max", str(n), "t"])
+        _, out, _ = self.run_cli(["--inline-max", str(n), "t"])
         self.assertIn("Apply these instructions", out)
-        _, out, _ = self.run_cli(["--use", "--inline-max", str(n - 1), "t"])
+        _, out, _ = self.run_cli(["--inline-max", str(n - 1), "t"])
         self.assertNotIn("Apply these instructions", out)
 
     def test_scripts_are_mentioned(self) -> None:
@@ -142,7 +144,7 @@ class TestDelivery(UseFlowCase):
         (d / "scripts").mkdir()
         (d / "scripts/run.sh").write_text("echo hi\n")
         self.approve()
-        code, out, _ = self.run_cli(["--use", "t"])
+        code, out, _ = self.run_cli(["t"])
         self.assertEqual(code, 0)
         self.assertIn(".tink/.active/alpha/scripts", out)
 
@@ -154,14 +156,14 @@ class TestNoSkill(UseFlowCase):
         self.add_skill("alpha")
         self.approve()
         for status in ("uncertain", "no_skill_needed", "no_match"):
-            code, out, _ = self.run_cli(["--use", "t"], self.router(status=status))
+            code, out, _ = self.run_cli(["t"], self.router(status=status))
             self.assertEqual((code, out), (1, self.MSG), status)
         self.assertFalse((self.proj / ".tink").exists())
 
     def test_no_candidates_is_no_skill(self) -> None:
         self.add_skill("alpha")
         self.pin("build-skillset", ["alpha"], required=["alpha"])
-        code, out, _ = self.run_cli(["--use", "--stage", "build", "t"])
+        code, out, _ = self.run_cli(["--skillset", "build-skillset", "t"])
         self.assertEqual((code, out), (1, self.MSG))
         self.assertEqual(self.seen, [])
 
@@ -169,7 +171,7 @@ class TestNoSkill(UseFlowCase):
 class TestRefusals(UseFlowCase):
     def test_unapproved_leaks_nothing(self) -> None:
         self.add_skill("alpha", "TOP-SECRET-CONTENT")
-        code, out, err = self.run_cli(["--use", "t"])
+        code, out, err = self.run_cli(["t"])
         self.assertEqual(code, 2)
         self.assertEqual(
             out, "Skill 'alpha' was selected but could not be delivered: it is not approved "
@@ -184,7 +186,7 @@ class TestRefusals(UseFlowCase):
         outside.write_text(skill_md("alpha", "alpha specialist", "LEAKED-OUTSIDE"))
         os.symlink(outside, d / "SKILL.md")
         self.approve()
-        code, out, err = self.run_cli(["--use", "t"])
+        code, out, err = self.run_cli(["t"])
         self.assertEqual(code, 2)
         self.assertIn("could not be delivered", out)
         self.assertNotIn("LEAKED-OUTSIDE", out + err)
@@ -193,7 +195,7 @@ class TestRefusals(UseFlowCase):
         d = self.add_skill("alpha", "original")
         self.approve()
         (d / "SKILL.md").write_text(skill_md("alpha", "alpha specialist", "TAMPERED"))
-        code, out, _ = self.run_cli(["--use", "t"])
+        code, out, _ = self.run_cli(["t"])
         self.assertEqual(code, 2)
         self.assertNotIn("TAMPERED", out)
 
@@ -203,7 +205,7 @@ class TestRefusals(UseFlowCase):
         empty = self.tmp / "empty"
         empty.mkdir()
         with patch.dict(os.environ, {"PATH": str(empty)}):
-            code, out, _ = self.run_cli(["--use", "t"])
+            code, out, _ = self.run_cli(["t"])
         self.assertEqual(code, 2)
         self.assertEqual(
             out, "Skill 'alpha' was selected but could not be delivered: the `tink` CLI is not on PATH "
@@ -213,7 +215,7 @@ class TestRefusals(UseFlowCase):
         self.add_skill("alpha")
         def boom(task, skills, args):
             raise RuntimeError("network down")
-        code, out, _ = self.run_cli(["--use", "t"], boom)
+        code, out, _ = self.run_cli(["t"], boom)
         self.assertEqual(code, 2)
         self.assertIn("proceed without", out)
         self.assertNotIn("Traceback", out)
@@ -223,7 +225,7 @@ class TestRefusals(UseFlowCase):
         out, err = io.StringIO(), io.StringIO()
         with patch.dict(os.environ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             os.environ.pop("TYPESAFE_API_KEY", None)
-            code = cli.main(["--use", "t"])
+            code = cli.main(["t"])
         self.assertEqual(code, 2)
         self.assertIn("proceed without", out.getvalue())
 
@@ -236,51 +238,168 @@ class TestCandidates(UseFlowCase):
         self.approve()
 
     def test_no_skillset_offers_whole_library(self) -> None:
-        self.run_cli(["--use", "t"])
+        self.run_cli(["t"])
         self.assertEqual(sorted(self.seen[0]), ["alpha", "beta", "gamma", "principle-x"])
 
-    def test_required_excluded_and_stage_constrains(self) -> None:
+    def test_required_excluded_and_skillset_constrains(self) -> None:
         self.pin("build-skillset", ["alpha", "principle-x", "beta"], required=["principle-x"])
-        self.run_cli(["--use", "--stage", "build", "t"])
+        self.run_cli(["--skillset", "build-skillset", "t"])
         self.assertEqual(sorted(self.seen[0]), ["alpha", "beta"])
 
     def test_skillset_flag_and_absent_required(self) -> None:
         self.pin("mine-skillset", ["alpha", "principle-x"])
-        self.run_cli(["--use", "--skillset", "mine", "t"])
+        self.run_cli(["--skillset", "mine", "t"])
         self.assertEqual(sorted(self.seen[0]), ["alpha", "principle-x"])
 
     def test_unknown_skillset_fails_open(self) -> None:
-        code, out, _ = self.run_cli(["--use", "--skillset", "nope", "t"])
+        code, out, _ = self.run_cli(["--skillset", "nope", "t"])
         self.assertEqual(code, 2)
         self.assertIn("proceed without", out)
         self.assertEqual(self.seen, [])
 
 
 class TestUsage(UseFlowCase):
-    def test_incompatible_flags(self) -> None:
-        for extra in (["-i"], ["--install"], ["--prune"], ["--multi"]):
-            code, out, err = self.run_cli(["--use", *extra, "t"])
-            self.assertEqual(code, 2, extra)
-            self.assertEqual(out, "")
-            self.assertEqual(len(err.strip().splitlines()), 1, extra)
-            self.assertIn("--use", err)
+    def usage_error(self, argv, needle):
+        code, out, err = self.run_cli(argv)
+        self.assertEqual(code, 2, argv)
+        self.assertEqual(out, "")
+        lines = err.splitlines()
+        self.assertEqual(len(lines), 2, err)
+        self.assertIn(needle, lines[0])
+        self.assertEqual(self.seen, [])
 
     def test_empty_task(self) -> None:
-        code, out, err = self.run_cli(["--use"])
-        self.assertEqual(code, 2)
-        self.assertEqual(len(err.strip().splitlines()), 1)
+        self.usage_error([], "task")
+        self.usage_error(["   "], "task")
 
-    def test_other_modes_unchanged(self) -> None:
-        code, out, _ = self.run_cli(["version"])
+    def test_strict_requires_a_skillset(self) -> None:
+        self.usage_error(["--strict", "some task"], "--strict")
+
+    def test_negative_inline_max(self) -> None:
+        self.usage_error(["--inline-max", "-1", "some task"], "--inline-max")
+
+    def test_former_command_words_are_ordinary_tasks(self) -> None:
+        self.add_skill("alpha")
+        self.approve()
+        for word in ("prune", "update", "version"):
+            code, _, _ = self.run_cli([word])
+            self.assertEqual(code, 0, word)
+        self.assertEqual(self.tasks, ["prune", "update", "version"])
+
+
+class TestPick(UseFlowCase):
+    """`--pick` decides only: no mount, no writes, no receipt."""
+
+    PICK_FIELDS = {"contract_version", "status", "task", "skillset", "scope", "specialist_noul",
+                   "winner", "probability", "confidence", "threshold", "runner_up",
+                   "runner_up_probability", "margin", "elapsed_ms", "fits", "shortlist"}
+
+    def setUp(self) -> None:
+        super().setUp()
+        for n in ("alpha", "beta"):
+            self.add_skill(n)  # deliberately NOT approved: pick must not need approval
+        self.pin("build-skillset", ["alpha"])
+
+    def snapshot(self) -> dict:
+        snap = {}
+        for path in sorted(self.tmp.rglob("*")):
+            rel = str(path.relative_to(self.tmp))
+            snap[rel] = None if path.is_dir() else path.read_bytes()
+        return snap
+
+    def test_pick_never_writes_anything(self) -> None:
+        receipt = self.tmp / "r.jsonl"
+        before = self.snapshot()
+        with patch.dict(os.environ, {"TINK_ROUTE_RECEIPT": str(self.tmp / "env.jsonl")}):
+            for extra in ([], ["--json"], ["--skillset", "build"]):
+                code, _, _ = self.run_cli(["--pick", *extra, "t"])
+                self.assertEqual(code, 0, extra)
+        self.run_cli(["--pick", "t"], self.router(status="uncertain"))
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.proj / ".tink").exists())
+
+    def test_pick_rejects_an_explicit_receipt(self) -> None:
+        code, out, err = self.run_cli(["--pick", "--receipt", str(self.tmp / "r.jsonl"), "t"])
+        self.assertEqual((code, out), (2, ""))
+        lines = err.splitlines()
+        self.assertEqual(len(lines), 2, err)
+        self.assertIn("--receipt", lines[0])
+        self.assertEqual(self.seen, [])
+        self.assertFalse((self.tmp / "r.jsonl").exists())
+
+    def test_pick_does_not_call_tink(self) -> None:
+        with patch.dict(os.environ, {"PATH": "/nonexistent"}):
+            code, out, _ = self.run_cli(["--pick", "t"])
         self.assertEqual(code, 0)
-        self.assertTrue(out.startswith("tink-route "))
+        self.assertEqual(out, "Skill: alpha (confidence 0.91)\n")
+
+    def test_human_lines_and_exit_codes(self) -> None:
+        code, out, _ = self.run_cli(["--pick", "t"])
+        self.assertEqual((code, out), (0, "Skill: alpha (confidence 0.91)\n"))
+        code, out, _ = self.run_cli(["--pick", "t"], self.router(status="no_skill_needed"))
+        self.assertEqual((code, out), (1, "No specialist skill applies to this task.\n"))
+
+    def test_json_field_set_is_exact(self) -> None:
+        code, out, _ = self.run_cli(["--pick", "--json", "t"])
+        d = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(set(d), self.PICK_FIELDS)
+        self.assertEqual((d["contract_version"], d["status"], d["winner"], d["scope"], d["skillset"]),
+                         (1, "routed", "alpha", "library", None))
+        self.assertEqual(d["confidence"], 0.91)
+
+    def test_json_field_set_when_no_skill(self) -> None:
+        code, out, _ = self.run_cli(["--pick", "--json", "t"], self.router(status="uncertain"))
+        d = json.loads(out)
+        self.assertEqual(code, 1)
+        self.assertEqual(set(d), self.PICK_FIELDS)
+        self.assertEqual((d["status"], d["winner"]), ("uncertain", None))
+
+    def test_json_field_set_when_nothing_to_route(self) -> None:
+        self.pin("empty-skillset", ["ghost"])
+        code, out, _ = self.run_cli(["--pick", "--json", "--skillset", "empty", "--strict", "t"])
+        d = json.loads(out)
+        self.assertEqual(code, 1)
+        self.assertEqual(set(d), self.PICK_FIELDS)
+        self.assertEqual((d["status"], d["scope"], d["skillset"]), ("no_candidates_available", "skillset", "empty"))
+        self.assertEqual(self.seen, [])
+
+    def test_pick_shares_skillset_scope_and_fallback(self) -> None:
+        results = iter([("no_skill_needed", None), ("routed", "beta")])
+
+        def fn(task, skills, args):
+            self.seen.append([s["name"] for s in skills])
+            status, winner = next(results)
+            return RoutingResult(status=status, task=task, winner=winner, confidence=0.8, probability=0.8)
+        code, out, _ = self.run_cli(["--pick", "--json", "--skillset", "build-skillset", "t"], fn)
+        d = json.loads(out)
+        self.assertEqual((code, d["winner"], d["scope"], d["skillset"]), (0, "beta", "library", "build-skillset"))
+        self.assertEqual(self.seen, [["alpha"], ["alpha", "beta"]])
+
+    def test_pick_strict_does_not_retry(self) -> None:
+        code, _, _ = self.run_cli(["--pick", "--skillset", "build", "--strict", "t"],
+                                  self.router(status="no_skill_needed"))
+        self.assertEqual(code, 1)
+        self.assertEqual(self.seen, [["alpha"]])
+
+    def test_pick_errors_exit_2(self) -> None:
+        code, out, _ = self.run_cli(["--pick", "--skillset", "nope", "t"])
+        self.assertEqual(code, 2)
+        self.assertIn("could not be resolved", out + _)
+        code, out, _ = self.run_cli(["--pick", "--json", "--skillset", "nope", "t"])
+        d = json.loads(out)
+        self.assertEqual((code, d["status"], d["reason"]), (2, "error", "skillset_error"))
+
+    def test_pick_rejects_unknown_winner(self) -> None:
+        code, out, _ = self.run_cli(["--pick", "--json", "t"], self.router(winner="ghost"))
+        self.assertEqual((code, json.loads(out)["reason"]), (2, "invalid_winner"))
 
 
 class TestJson(UseFlowCase):
     def test_delivered_inline(self) -> None:
         self.add_skill("alpha", "body")
         self.approve()
-        code, out, _ = self.run_cli(["--use", "--json", "t"])
+        code, out, _ = self.run_cli(["--json", "t"])
         d = json.loads(out)
         content = (self.home / "skills/alpha/SKILL.md").read_text()
         self.assertEqual(code, 0)
@@ -293,7 +412,7 @@ class TestJson(UseFlowCase):
     def test_delivered_path(self) -> None:
         self.add_skill("alpha", "body " * 100)
         self.approve()
-        code, out, _ = self.run_cli(["--use", "--json", "--inline-max", "10", "t"])
+        code, out, _ = self.run_cli(["--json", "--inline-max", "10", "t"])
         d = json.loads(out)
         self.assertEqual(code, 0)
         self.assertEqual((d["delivery"], d["path"], d["content"]),
@@ -301,7 +420,7 @@ class TestJson(UseFlowCase):
 
     def test_no_skill(self) -> None:
         self.add_skill("alpha")
-        code, out, _ = self.run_cli(["--use", "--json", "t"], self.router(status="uncertain"))
+        code, out, _ = self.run_cli(["--json", "t"], self.router(status="uncertain"))
         d = json.loads(out)
         self.assertEqual(code, 1)
         self.assertEqual(d["status"], "no_skill")
@@ -313,7 +432,7 @@ class TestJson(UseFlowCase):
 
     def test_error_has_no_content(self) -> None:
         self.add_skill("alpha", "SECRET")
-        code, out, _ = self.run_cli(["--use", "--json", "t"])
+        code, out, _ = self.run_cli(["--json", "t"])
         d = json.loads(out)
         self.assertEqual(code, 2)
         self.assertEqual((d["status"], d["skill"], d["reason"], d["delivery"], d["content"]),
@@ -326,10 +445,10 @@ class TestReceipts(UseFlowCase):
         self.add_skill("alpha")
         self.approve()
         rp = self.tmp / "deep/dir/receipts.jsonl"
-        self.run_cli(["--use", "--receipt", str(rp), "first"])
-        self.run_cli(["--use", "--receipt", str(rp), "second"], self.router(status="uncertain"))
+        self.run_cli(["--receipt", str(rp), "first"])
+        self.run_cli(["--receipt", str(rp), "second"], self.router(status="uncertain"))
         (self.home / "skills/alpha/SKILL.md").write_text(skill_md("alpha", "alpha specialist", "changed"))
-        self.run_cli(["--use", "--receipt", str(rp), "third", "--skillset", "x"])
+        self.run_cli(["--receipt", str(rp), "third", "--skillset", "x"])
         lines = self.receipt_lines(rp)
         # third: unknown skillset => error before routing
         self.assertEqual([l["task"] for l in lines], ["first", "second", "third"])
@@ -351,13 +470,13 @@ class TestReceipts(UseFlowCase):
         self.approve()
         rp = self.tmp / "r.jsonl"
         with patch.dict(os.environ, {"TINK_ROUTE_RECEIPT": str(rp)}):
-            self.run_cli(["--use", "t"])
+            self.run_cli(["t"])
         self.assertEqual(len(self.receipt_lines(rp)), 1)
 
     def test_mount_error_recorded(self) -> None:
         self.add_skill("alpha")
         rp = self.tmp / "r.jsonl"
-        self.run_cli(["--use", "--receipt", str(rp), "t"])
+        self.run_cli(["--receipt", str(rp), "t"])
         l = self.receipt_lines(rp)[0]
         self.assertEqual((l["status"], l["skill"], l["reason"]), ("error", "alpha", "unapproved"))
 
@@ -368,7 +487,7 @@ class TestReceipts(UseFlowCase):
         target.write_text("keep\n")
         rp = self.tmp / "link.jsonl"
         os.symlink(target, rp)
-        code, out, err = self.run_cli(["--use", "--receipt", str(rp), "t"])
+        code, out, err = self.run_cli(["--receipt", str(rp), "t"])
         self.assertEqual(code, 0)
         self.assertIn("Apply these instructions", out)
         self.assertEqual(target.read_text(), "keep\n")
@@ -378,10 +497,10 @@ class TestReceipts(UseFlowCase):
     def test_unwritable_receipt_warns_only(self) -> None:
         self.add_skill("alpha")
         self.approve()
-        code0, out0, _ = self.run_cli(["--use", "t"])
+        code0, out0, _ = self.run_cli(["t"])
         rp = self.tmp / "isdir"
         rp.mkdir()
-        code, out, err = self.run_cli(["--use", "--receipt", str(rp), "t"])
+        code, out, err = self.run_cli(["--receipt", str(rp), "t"])
         self.assertEqual((code, out), (code0, out0))
         self.assertEqual(len(err.strip().splitlines()), 1)
         self.assertIn("receipt", err)
@@ -389,7 +508,7 @@ class TestReceipts(UseFlowCase):
     def test_no_stray_files(self) -> None:
         self.add_skill("alpha")
         self.approve()
-        self.run_cli(["--use", "t"])
+        self.run_cli(["t"])
         top = sorted(p.name for p in self.proj.iterdir() if p.name != ".git")
         self.assertEqual(top, [".tink"] if (self.proj / ".tink").exists() else [])
 
@@ -412,7 +531,7 @@ class TestPlainMessages(UseFlowCase):
         out, err = io.StringIO(), io.StringIO()
         with patch.dict(os.environ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             os.environ.pop("TYPESAFE_API_KEY", None)
-            code = cli.main(["--use", "t"])
+            code = cli.main(["t"])
         self.assertEqual(code, 2)
         self.assertEqual(out.getvalue(),
                          "Skill routing unavailable: TYPESAFE_API_KEY is not set (set it to enable skill routing); proceed without a skill.\n")
@@ -422,31 +541,31 @@ class TestPlainMessages(UseFlowCase):
 
         def boom(task, skills, args):
             raise RuntimeError("network down")
-        self.check_slug(["--use", "t"], "route_failed",
+        self.check_slug(["t"], "route_failed",
                         "Skill routing unavailable: the routing service call failed (network or API error; "
                         "retry later); proceed without a skill.\n", boom)
 
     def test_library_missing(self) -> None:
-        self.check_slug(["--use", "--library", str(self.tmp / "nope"), "t"], "library_missing",
+        self.check_slug(["--library", str(self.tmp / "nope"), "t"], "library_missing",
                         "Skill routing unavailable: the skill library was not found (default ~/.tink-library/skills or "
                         "$TINK_HOME/skills; override with --library); proceed without a skill.\n")
 
     def test_library_unreadable(self) -> None:
         self.add_skill("alpha")
-        with patch("tink_route.use.load_library_skills", side_effect=OSError("x")):
-            self.check_slug(["--use", "t"], "library_unreadable",
+        with patch("tink_route.flow.load_library_skills", side_effect=OSError("x")):
+            self.check_slug(["t"], "library_unreadable",
                             "Skill routing unavailable: the skill library could not be read (run `tink doctor`); "
                             "proceed without a skill.\n")
 
     def test_skillset_error(self) -> None:
         self.add_skill("alpha")
-        self.check_slug(["--use", "--skillset", "nope", "t"], "skillset_error",
+        self.check_slug(["--skillset", "nope", "t"], "skillset_error",
                         "Skill routing unavailable: the skillset could not be resolved (see `tink skillset list` or "
                         "check the pin under .tink/skillsets or $TINK_HOME/skillsets); proceed without a skill.\n")
 
     def test_unknown_slug_names_it(self) -> None:
         self.add_skill("alpha")
-        self.check_slug(["--use", "t"], "invalid_winner",
+        self.check_slug(["t"], "invalid_winner",
                         "Skill 'ghost' was selected but could not be delivered (invalid_winner); "
                         "proceed without it.\n",
                         self.router(winner="ghost"))
@@ -455,10 +574,10 @@ class TestPlainMessages(UseFlowCase):
         d = self.add_skill("alpha", "original")
         self.approve()
         (d / "SKILL.md").write_text(skill_md("alpha", "alpha specialist", "TAMPERED"))
-        code, out, _ = self.run_cli(["--use", "--json", "t"])
+        code, out, _ = self.run_cli(["--json", "t"])
         reason = json.loads(out)["reason"]
         self.assertEqual(reason, "digest_mismatch")
-        code, out, _ = self.run_cli(["--use", "t"])
+        code, out, _ = self.run_cli(["t"])
         self.assertEqual(out, "Skill 'alpha' was selected but could not be delivered: it changed since "
                               "approval (review it, then run `tink library approve alpha`); "
                               "proceed without it.\n")
@@ -470,9 +589,9 @@ class TestPlainMessages(UseFlowCase):
         outside.write_text(skill_md("alpha", "alpha specialist", "x"))
         os.symlink(outside, d / "SKILL.md")
         self.approve()
-        _, out, _ = self.run_cli(["--use", "--json", "t"])
+        _, out, _ = self.run_cli(["--json", "t"])
         slug = json.loads(out)["reason"]
-        _, out, _ = self.run_cli(["--use", "t"])
+        _, out, _ = self.run_cli(["t"])
         if slug == "symlink_refused":
             self.assertEqual(out, "Skill 'alpha' was selected but could not be delivered: a symlink was "
                                   "found in the skill (replace it with a real copy); proceed without it.\n")
@@ -482,21 +601,21 @@ class TestPlainMessages(UseFlowCase):
     def test_unmapped_delivery_slug_generic(self) -> None:
         self.add_skill("alpha")
         self.approve()
-        with patch("tink_route.use._mount", side_effect=__import__("tink_route.use", fromlist=["x"]).UseError("weird_code")):
-            _, out, _ = self.run_cli(["--use", "t"])
+        with patch("tink_route.flow._mount", side_effect=__import__("tink_route.flow", fromlist=["x"]).FlowError("weird_code")):
+            _, out, _ = self.run_cli(["t"])
         self.assertEqual(out, "Skill 'alpha' was selected but could not be delivered (weird_code); "
                               "proceed without it.\n")
 
     def test_receipt_keeps_slug(self) -> None:
         self.add_skill("alpha")
         rp = self.tmp / "r.jsonl"
-        self.run_cli(["--use", "--receipt", str(rp), "t"])
+        self.run_cli(["--receipt", str(rp), "t"])
         self.assertEqual(self.receipt_lines(rp)[0]["reason"], "unapproved")
 
 
 class TestReceiptLocking(UseFlowCase):
     def test_no_sidecar_and_file_perms(self) -> None:
-        from tink_route.use import _write_receipt
+        from tink_route.flow import _write_receipt
         rp = self.tmp / "sub/r.jsonl"
         _write_receipt(rp, {"a": 1})
         _write_receipt(rp, {"a": 2})
@@ -505,19 +624,16 @@ class TestReceiptLocking(UseFlowCase):
         self.assertEqual(rp.stat().st_mode & 0o777, 0o644 & ~os.umask(0))
 
     def test_flock_taken_on_receipt_descriptor(self) -> None:
-        from tink_route import use
+        from tink_route import flow
         rp = self.tmp / "r.jsonl"
-        with patch.object(use.fcntl, "flock") as fl:
-            use._write_receipt(rp, {"a": 1})
+        with patch.object(flow.fcntl, "flock") as fl:
+            flow._write_receipt(rp, {"a": 1})
         self.assertEqual(fl.call_count, 2)  # LOCK_EX then LOCK_UN
 
 
-if __name__ == "__main__":
-    unittest.main()
 
-
-class TestStageFallback(UseFlowCase):
-    """A stage skillset is a hint, not a wall: with nothing found there, retry over the whole library."""
+class TestSkillsetFallback(UseFlowCase):
+    """A skillset is a hint, not a wall: with nothing found there, retry over the whole library."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -537,12 +653,12 @@ class TestStageFallback(UseFlowCase):
                                  confidence=0.9, probability=0.9)
         return fn
 
-    def use(self, extra, results):
-        return self.run_cli(["--use", "--receipt", str(self.receipt), *extra, "some task"],
+    def deliver(self, extra, results):
+        return self.run_cli(["--receipt", str(self.receipt), *extra, "some task"],
                             route_fn=self.seq_router(results))
 
-    def test_falls_back_to_library_when_stage_set_has_nothing(self) -> None:
-        code, out, _ = self.use(["--stage", "build"], [("no_skill_needed", None), ("routed", "gamma")])
+    def test_falls_back_to_library_when_skillset_has_nothing(self) -> None:
+        code, out, _ = self.deliver(["--skillset", "build-skillset"], [("no_skill_needed", None), ("routed", "gamma")])
         self.assertEqual(code, 0)
         self.assertEqual(self.seen[0], ["alpha"])
         self.assertEqual(self.seen[1], ["alpha", "beta", "gamma"])
@@ -551,45 +667,45 @@ class TestStageFallback(UseFlowCase):
         self.assertIn("outside the build-skillset skillset", out)
         self.assertEqual(self.receipt_lines(self.receipt)[-1]["scope"], "library")
 
-    def test_no_fallback_when_stage_set_routes(self) -> None:
-        code, out, _ = self.use(["--stage", "build"], [("routed", "alpha")])
+    def test_no_fallback_when_skillset_routes(self) -> None:
+        code, out, _ = self.deliver(["--skillset", "build-skillset"], [("routed", "alpha")])
         self.assertEqual(code, 0)
         self.assertEqual(len(self.seen), 1)
         self.assertNotIn("outside the", out)
         self.assertEqual(self.receipt_lines(self.receipt)[-1]["scope"], "skillset")
 
-    def test_stage_only_disables_fallback(self) -> None:
-        code, out, _ = self.use(["--stage", "build", "--stage-only"], [("no_skill_needed", None)])
+    def test_strict_disables_fallback(self) -> None:
+        code, out, _ = self.deliver(["--skillset", "build-skillset", "--strict"], [("no_skill_needed", None)])
         self.assertEqual(code, 1)
         self.assertEqual(len(self.seen), 1)
         self.assertEqual(self.receipt_lines(self.receipt)[-1]["scope"], "skillset")
 
     def test_nothing_anywhere_is_exit_1_after_both_attempts(self) -> None:
-        code, out, _ = self.use(["--stage", "build"], [("uncertain", None), ("no_skill_needed", None)])
+        code, out, _ = self.deliver(["--skillset", "build-skillset"], [("uncertain", None), ("no_skill_needed", None)])
         self.assertEqual(code, 1)
         self.assertEqual(len(self.seen), 2)
         self.assertIn("No specialist skill applies", out)
         self.assertEqual(self.receipt_lines(self.receipt)[-1]["scope"], "library")
 
-    def test_unscoped_use_makes_a_single_library_call(self) -> None:
-        code, _, _ = self.use([], [("no_skill_needed", None)])
+    def test_unscoped_makes_a_single_library_call(self) -> None:
+        code, _, _ = self.deliver([], [("no_skill_needed", None)])
         self.assertEqual(code, 1)
         self.assertEqual(len(self.seen), 1)
         self.assertEqual(self.receipt_lines(self.receipt)[-1]["scope"], "library")
 
     def test_json_reports_scope(self) -> None:
-        code, out, _ = self.use(["--stage", "build", "--json"], [("no_skill_needed", None), ("routed", "gamma")])
+        code, out, _ = self.deliver(["--skillset", "build-skillset", "--json"], [("no_skill_needed", None), ("routed", "gamma")])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["scope"], "library")
 
-    def test_stage_only_requires_a_scope(self) -> None:
-        code, _, err = self.run_cli(["--use", "--stage-only", "some task"], route_fn=self.seq_router([]))
+    def test_strict_requires_a_scope(self) -> None:
+        code, _, err = self.run_cli(["--strict", "some task"], route_fn=self.seq_router([]))
         self.assertEqual(code, 2)
-        self.assertIn("--stage-only", err)
+        self.assertIn("--strict", err)
 
 
 class TestProjectPins(UseFlowCase):
-    """Stage skillset pins live in the project (`.tink/skillsets/`) and win over home pins."""
+    """Skillset pins live in the project (`.tink/skillsets/`) and win over home pins."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -608,7 +724,7 @@ class TestProjectPins(UseFlowCase):
         path.write_text(raw if raw is not None else json.dumps(data))
         return path
 
-    def use(self, extra, results=None):
+    def deliver(self, extra, results=None):
         results = list(results or [("routed", "alpha")])
         calls = iter(results)
 
@@ -617,38 +733,38 @@ class TestProjectPins(UseFlowCase):
             status, winner = next(calls)
             return RoutingResult(status=status, task=task, winner=winner if status == "routed" else None,
                                  confidence=0.9, probability=0.9)
-        return self.run_cli(["--use", "--receipt", str(self.receipt), *extra, "some task"], route_fn=fn)
+        return self.run_cli(["--receipt", str(self.receipt), *extra, "some task"], route_fn=fn)
 
     def test_project_pin_resolves_without_home_pin(self) -> None:
         self.project_pin("build-skillset.json", ["alpha", "beta", "prin"], required=["prin"])
-        code, _, _ = self.use(["--stage", "build"])
+        code, _, _ = self.deliver(["--skillset", "build-skillset"])
         self.assertEqual(code, 0)
         self.assertEqual(sorted(self.seen[0]), ["alpha", "beta"])
 
     def test_project_pin_wins_over_differing_home_pin(self) -> None:
         self.pin("build-skillset", ["gamma", "hprin"], required=["gamma"])
         self.project_pin("build-skillset.json", ["alpha", "beta", "prin"], required=["prin"])
-        code, _, _ = self.use(["--stage", "build"])
+        code, _, _ = self.deliver(["--skillset", "build-skillset"])
         self.assertEqual(code, 0)
         self.assertEqual(sorted(self.seen[0]), ["alpha", "beta"])
 
     def test_bare_name_project_pin_and_canonical_request(self) -> None:
         self.project_pin("mine.json", ["alpha", "gamma"])
-        self.use(["--skillset", "mine"])
-        self.use(["--skillset", "mine-skillset"])
+        self.deliver(["--skillset", "mine"])
+        self.deliver(["--skillset", "mine-skillset"])
         self.assertEqual(sorted(self.seen[0]), ["alpha", "gamma"])
         self.assertEqual(sorted(self.seen[1]), ["alpha", "gamma"])
 
     def test_canonical_project_pin_beats_bare_project_pin(self) -> None:
         self.project_pin("mine.json", ["gamma"])
         self.project_pin("mine-skillset.json", ["alpha"])
-        self.use(["--skillset", "mine"])
+        self.deliver(["--skillset", "mine"])
         self.assertEqual(self.seen[0], ["alpha"])
 
     def test_malformed_project_pin_fails_closed(self) -> None:
         self.pin("build-skillset", ["gamma"])
         self.project_pin("build-skillset.json", [], raw="{not json")
-        code, out, _ = self.use(["--stage", "build"])
+        code, out, _ = self.deliver(["--skillset", "build-skillset"])
         self.assertEqual(code, 2)
         self.assertIn("could not be resolved", out)
         self.assertEqual(self.seen, [])
@@ -656,12 +772,12 @@ class TestProjectPins(UseFlowCase):
     def test_project_pin_without_members_fails_closed(self) -> None:
         self.pin("build-skillset", ["gamma"])
         self.project_pin("build-skillset.json", [], raw='{"source": "x"}')
-        code, out, _ = self.use(["--stage", "build"])
+        code, out, _ = self.deliver(["--skillset", "build-skillset"])
         self.assertEqual(code, 2)
         self.assertEqual(self.seen, [])
 
     def test_missing_everywhere_mentions_project_location(self) -> None:
-        code, out, _ = self.use(["--skillset", "nope"])
+        code, out, _ = self.deliver(["--skillset", "nope"])
         self.assertEqual(code, 2)
         self.assertIn(".tink/skillsets", out)
         from tink_route.core.exceptions import SkillsetError
@@ -672,15 +788,19 @@ class TestProjectPins(UseFlowCase):
 
     def test_fallback_still_works_with_project_pin_scope(self) -> None:
         self.project_pin("build-skillset.json", ["alpha", "prin"], required=["prin"])
-        code, out, _ = self.use(["--stage", "build"], [("no_skill_needed", None), ("routed", "gamma")])
+        code, out, _ = self.deliver(["--skillset", "build-skillset"], [("no_skill_needed", None), ("routed", "gamma")])
         self.assertEqual(code, 0)
         self.assertEqual(self.seen[0], ["alpha"])
         self.assertNotIn("prin", self.seen[1])
         self.assertIn("gamma", self.seen[1])
         self.assertIn("outside the build-skillset skillset", out)
 
-    def test_stage_only_unchanged_with_project_pin(self) -> None:
+    def test_strict_unchanged_with_project_pin(self) -> None:
         self.project_pin("build-skillset.json", ["alpha", "prin"], required=["prin"])
-        code, _, _ = self.use(["--stage", "build", "--stage-only"], [("no_skill_needed", None)])
+        code, _, _ = self.deliver(["--skillset", "build-skillset", "--strict"], [("no_skill_needed", None)])
         self.assertEqual(code, 1)
         self.assertEqual(len(self.seen), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

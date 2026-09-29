@@ -1,9 +1,7 @@
-"""Clarity/stability batch: usage errors, --help layout, legacy deprecation note, versioning."""
+"""CLI surface: one obvious command line, short help, removed flags rejected, versioning."""
 import contextlib
 import io
-import os
 import re
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,16 +11,18 @@ from tink_route import cli
 from tink_route.adapters import client as client_mod
 
 REPO = Path(__file__).resolve().parent.parent
-TRY = 'Try: tink-route --help  (agent-initiated skills: tink-route --use "<task>")'
+TRY = "Try: tink-route --help"
+REMOVED = ["--use", "--stage", "--stage-only", "-i", "--install", "--prune", "--all-unpinned",
+           "--dry-run", "--ephemeral", "--no-ephemeral", "--multi", "--no-multi", "--top-k", "--check"]
+ADVANCED = ["--library", "--model", "--threshold", "--tri-gate", "--no-tri-gate", "--rerank",
+            "--no-rerank", "--fits-threshold", "--deadline", "--inline-max"]
+MAIN = ["--skillset", "--strict", "--receipt", "--json", "--pick", "--version"]
 
 
 def run(argv):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        try:
-            code = cli.main(argv)
-        except SystemExit as e:
-            code = e.code
+        code = cli.main(argv)
     return code, out.getvalue(), err.getvalue()
 
 
@@ -39,16 +39,25 @@ class TestUsageErrors(unittest.TestCase):
         self.assertNotIn("usage:", err)
 
     def test_unknown_flag(self):
-        self.check(["--bogus"], "--bogus")
-
-    def test_bad_stage_choice(self):
-        self.check(["--use", "--stage", "nope", "t"], "nope")
+        self.check(["--bogus", "t"], "--bogus")
 
     def test_bad_type(self):
-        self.check(["--top-k", "abc", "t"], "abc")
+        self.check(["--inline-max", "abc", "t"], "abc")
 
     def test_missing_value(self):
-        self.check(["--use", "--stage"], "--stage")
+        self.check(["--skillset"], "--skillset")
+
+    def test_abbreviations_are_not_accepted(self):
+        self.check(["--inl", "5", "t"], "--inl")
+
+    def test_removed_flags_are_rejected(self):
+        for flag in REMOVED:
+            with self.subTest(flag=flag):
+                self.check([flag, "t"], flag)
+
+    def test_removed_flags_with_values_are_rejected(self):
+        self.check(["--stage", "build", "t"], "--stage")
+        self.check(["--top-k", "3", "t"], "--top-k")
 
 
 class TestHelp(unittest.TestCase):
@@ -57,76 +66,42 @@ class TestHelp(unittest.TestCase):
         self.assertEqual(code, 0)
         return out
 
-    def test_use_group_first(self):
+    def test_no_removed_flags_or_deprecation(self):
         h = self.help()
-        a = h.index("Agent-initiated skills (recommended)")
-        b = h.index("Legacy: persistent install (deprecated; prefer --use)")
-        self.assertLess(a, b)
-        recommended, legacy = h[a:b], h[b:]
-        for flag in ("--use", "--stage", "--skillset", "--stage-only", "--receipt",
-                     "--inline-max", "--json", "--deadline", "--library", "--model"):
-            self.assertIn(flag, recommended, flag)
-        for flag in ("--install", "--prune", "--all-unpinned", "--dry-run", "--ephemeral",
-                     "--multi", "--top-k", "--check"):
-            self.assertIn(flag, legacy, flag)
-            self.assertNotIn(f"  {flag}", recommended.split("Legacy")[0])
+        for flag in REMOVED:
+            self.assertIsNone(re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", h), flag)
+        for word in ("[deprecated]", "deprecated", "Legacy", "install", "prune", "ephemeral"):
+            self.assertNotIn(word, h, word)
 
-    def test_legacy_flags_marked_deprecated(self):
+    def test_help_is_short(self):
+        self.assertLessEqual(len(self.help().splitlines()), 45)
+
+    def test_tuning_flags_live_under_advanced(self):
         h = self.help()
-        legacy = h[h.index("Legacy: persistent install"):]
-        for flag in ("--install", "--prune", "--all-unpinned", "--dry-run", "--ephemeral",
-                     "--multi", "--top-k", "--check"):
-            block = re.search(rf"^\s+[^\n]*{re.escape(flag)}[^\n]*\n(?:\s{{10,}}[^\n]*\n)*", legacy, re.M)
-            self.assertIsNotNone(block, flag)
-            self.assertIn("[deprecated]", block.group(0), flag)
+        main_part, advanced = h.split("Advanced", 1)
+        for flag in ADVANCED:
+            self.assertIn(flag, advanced, flag)
+            self.assertNotIn(flag, main_part, flag)
+        for flag in MAIN:
+            self.assertIn(flag, main_part, flag)
+        self.assertIn("-h, --help", main_part)
 
-    def test_epilog_kept(self):
+    def test_epilog_has_agent_line_and_exit_codes(self):
         h = self.help()
-        self.assertIn("tink-route --use --stage <stage>", h)
-        self.assertIn("Exit codes: 0 skill delivered", h)
+        self.assertIn('tink-route --skillset <stage>-skillset "<what you need>"', h)
+        self.assertIn("if it exits non-zero, continue without it", h)
+        self.assertIn("Exit codes: 0 delivered", h)
 
-    def test_flags_still_parse(self):
-        p = cli.build_parser()
-        a = p.parse_args(["-i", "--no-ephemeral", "--multi", "--top-k", "3", "--dry-run", "t"])
-        self.assertTrue(a.install and a.multi and a.dry_run)
-        self.assertFalse(a.ephemeral)
-        self.assertEqual(a.top_k, 3)
+    def test_tuning_flags_still_parse(self):
+        a = cli.build_parser().parse_args(
+            ["--no-rerank", "--no-tri-gate", "--threshold", "0.7", "--fits-threshold", "0.4",
+             "--deadline", "5", "--inline-max", "9", "--library", "/x", "--model", "m", "t"])
+        self.assertFalse(a.rerank or a.tri_gate)
+        self.assertEqual((a.threshold, a.fits_threshold, a.deadline, a.inline_max), (0.7, 0.4, 5.0, 9))
 
-
-class TestLegacyNote(unittest.TestCase):
-    NOTE = "note: persistent install (-i/--prune) is deprecated; prefer `tink-route --use`."
-
-    def setUp(self):
-        cli._LEGACY_NOTED = False
-        self.tmp = tempfile.mkdtemp()
-        self.prev = os.getcwd()
-        os.chdir(self.tmp)
-        self.addCleanup(os.chdir, self.prev)
-
-    def test_prune_notes_once_per_process(self):
-        _, _, err = run(["--prune"])
-        self.assertEqual(err.splitlines().count(self.NOTE), 1)
-        _, _, err2 = run(["--prune"])
-        self.assertNotIn(self.NOTE, err2)
-
-    def test_prune_json_stdout_clean(self):
-        _, out, err = run(["--prune", "--json"])
-        self.assertIn(self.NOTE, err)
-        self.assertNotIn("deprecated", out)
-
-    def test_install_notes(self):
-        with patch.dict(os.environ):
-            os.environ.pop("TYPESAFE_API_KEY", None)
-            _, _, err = run(["-i", "task"])
-        self.assertIn(self.NOTE, err)
-
-    def test_plain_recommend_and_use_do_not_note(self):
-        with patch.dict(os.environ):
-            os.environ.pop("TYPESAFE_API_KEY", None)
-            _, _, err = run(["task"])
-            self.assertNotIn(self.NOTE, err)
-            _, _, err = run(["--use", "task"])
-            self.assertNotIn(self.NOTE, err)
+    def test_version_flag(self):
+        code, out, _ = run(["--version"])
+        self.assertEqual((code, out.strip()), (0, f"tink-route {tink_route.__version__}"))
 
 
 class TestVersioning(unittest.TestCase):
@@ -153,7 +128,7 @@ class TestVersioning(unittest.TestCase):
     def test_versions_agree(self):
         m = re.search(r'^version\s*=\s*"([^"]+)"', (REPO / "pyproject.toml").read_text(), re.M)
         self.assertEqual(m.group(1), tink_route.__version__)
-        self.assertEqual(tink_route.__version__, "0.7.0")
+        self.assertEqual(tink_route.__version__, "0.8.0")
 
 
 if __name__ == "__main__":

@@ -12,14 +12,9 @@ BATCH_SIZE = 24
 NO_SKILL_SENTINEL = "__no_skill__"
 NO_MATCH_SENTINEL = "__no_match__"
 
-RESERVED_SKILLS = frozenset({"manage-tink"})
-
 RERANK_SHORTLIST_SIZE = 3
 RERANK_BODY_EXCERPT_CHARS = 700
 FITS_THRESHOLD = 0.30
-
-MULTI_DEFAULT_TOP_K = 3
-MULTI_MAX_TOP_K = 10
 
 
 def get_default_tink_home() -> Path:
@@ -41,25 +36,6 @@ def get_default_library_path() -> Path:
         return home / "skills"
     return Path.home() / ".tink-library" / "skills"
 
-
-STAGE_TO_SKILLSET: dict[str, str] = {
-    "plan": "planning-skillset",
-    "01-plan": "planning-skillset",
-    "planning": "planning-skillset",
-    "design": "design-skillset",
-    "02-design": "design-skillset",
-    "build": "build-skillset",
-    "03-build": "build-skillset",
-    "test": "testing-skillset",
-    "04-test": "testing-skillset",
-    "testing": "testing-skillset",
-    "deploy": "deployment-skillset",
-    "05-deploy": "deployment-skillset",
-    "deployment": "deployment-skillset",
-    "maintain": "maintenance-skillset",
-    "06-maintain": "maintenance-skillset",
-    "maintenance": "maintenance-skillset",
-}
 
 GATE_QUESTIONS = {
     "specialised_workflow": (

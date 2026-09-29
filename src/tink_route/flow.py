@@ -1,9 +1,9 @@
-"""`tink-route --use`: agent-initiated skill delivery.
+"""The tink-route flow: route a task, then deliver the winning skill or just report it.
 
-Route the task, let `tink mount --json --payload` verify the winner, and print the
-skill on stdout as an ordinary command result. Capability routing fails OPEN: any
-problem yields a one-line message and a non-zero exit so the agent proceeds without
-a skill. Skill content is printed only after tink has verified it.
+Delivery (the default) verifies the winner with `tink mount --json --payload` and prints
+it on stdout as an ordinary command result. It fails OPEN: any problem yields a one-line
+message and a non-zero exit so the agent proceeds without a skill. Skill content is
+printed only after tink has verified it. `--pick` stops after the routing decision.
 """
 
 from __future__ import annotations
@@ -17,9 +17,7 @@ from typing import Any, Callable
 
 from .adapters.client import JevRouterClient
 from .adapters.executor import SubprocessExecutor
-from .adapters.ledger import default_ledger
-from .core.constants import STAGE_TO_SKILLSET, get_default_tink_home
-from .core.engine import RoutingEngine
+from .core.constants import get_default_tink_home
 from .core.models import RoutingResult
 from .core.validation import is_valid_skill_name
 from .metadata import load_library_skills, resolve_skillset
@@ -31,10 +29,11 @@ except ImportError:  # pragma: no cover
 
 CONTRACT_VERSION = 1
 NO_SKILL_MESSAGE = "No specialist skill applies to this task; proceed without one."
+PICK_NO_SKILL_MESSAGE = "No specialist skill applies to this task."
 RouteFn = Callable[[str, list, Any], RoutingResult]
 
 
-class UseError(Exception):
+class FlowError(Exception):
     """A failure that must fail open. `reason` is a stable slug."""
 
     def __init__(self, reason: str, message: str = ""):
@@ -45,23 +44,20 @@ class UseError(Exception):
 def _default_route(task: str, skills: list, args: Any) -> RoutingResult:
     api_key = os.environ.get("TYPESAFE_API_KEY")
     if not api_key:
-        raise UseError("no_api_key", "TYPESAFE_API_KEY is not set")
+        raise FlowError("no_api_key", "TYPESAFE_API_KEY is not set")
     if args.deadline is not None:
         if not (0 < args.deadline <= 600):
-            raise UseError("bad_deadline", "--deadline must be between 0 and 600 seconds")
+            raise FlowError("bad_deadline", "--deadline must be between 0 and 600 seconds")
         client = JevRouterClient(api_key=api_key, model=args.model, timeout=args.deadline, max_retries=0)
     else:
         client = JevRouterClient(api_key=api_key, model=args.model)
-    engine = RoutingEngine(client=client, ledger=default_ledger)
-    return engine.route(
-        task=task,
-        skills=skills,
+    return client.route(
+        task,
+        skills,
         threshold=args.threshold,
-        install=False,
         tri_gate=args.tri_gate,
         rerank=args.rerank,
         fits_threshold=args.fits_threshold,
-        multi=False,
     )
 
 
@@ -130,14 +126,14 @@ def failure_text(reason: str, skill: str | None) -> str:
 
 
 def _mount(executor: SubprocessExecutor, name: str, cwd: Path, payload: bool) -> dict:
-    """Run `tink mount`; return parsed JSON (payload mode) or {} (plain). Raises UseError."""
+    """Run `tink mount`; return parsed JSON (payload mode) or {} (plain). Raises FlowError."""
     cmd = ["tink", "mount", name] + (["--json", "--payload"] if payload else [])
     try:
         code, stdout, _stderr = executor.run(cmd, cwd=cwd)
     except FileNotFoundError:
-        raise UseError("tink_not_found") from None
+        raise FlowError("tink_not_found") from None
     except OSError:
-        raise UseError("tink_unavailable") from None
+        raise FlowError("tink_unavailable") from None
     data: Any = None
     try:
         data = json.loads(stdout) if stdout.strip().startswith("{") else None
@@ -145,11 +141,11 @@ def _mount(executor: SubprocessExecutor, name: str, cwd: Path, payload: bool) ->
         data = None
     if code != 0:
         c = data.get("code") if isinstance(data, dict) else None
-        raise UseError(c if isinstance(c, str) and c.isidentifier() else "mount_failed")
+        raise FlowError(c if isinstance(c, str) and c.isidentifier() else "mount_failed")
     if not payload:
         return {}
     if not isinstance(data, dict):
-        raise UseError("bad_mount_output")
+        raise FlowError("bad_mount_output")
     pl = data.get("payload")
     digest = data.get("tree_digest")
     if (
@@ -159,8 +155,99 @@ def _mount(executor: SubprocessExecutor, name: str, cwd: Path, payload: bool) ->
         or not isinstance(digest, str)
         or not digest.startswith("sha256:")
     ):
-        raise UseError("bad_mount_output")
+        raise FlowError("bad_mount_output")
     return data
+
+
+class Decision:
+    """Where routing stands: the candidates offered last, the scope they came from, the result."""
+
+    def __init__(self, skillset: str | None):
+        self.skillset = skillset
+        self.scope = "skillset" if skillset else "library"
+        self.skills: list = []
+        self.result: RoutingResult | None = None
+        self.skill: str | None = None  # the winner, once it has been validated
+
+    @property
+    def routed(self) -> bool:
+        return self.result is not None and self.result.status == "routed" and bool(self.result.winner)
+
+
+def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | None) -> None:
+    """Choose a skill for `task`, filling in `d`. Raises FlowError on any failure.
+
+    Candidates are the library, narrowed to `--skillset` when given, always minus the
+    skillset's `required` skills (tink already compiled those). If the skillset yields
+    no skill, retry once over the whole library unless `--strict`.
+    """
+    library = Path(args.library)
+    if not library.is_dir():
+        raise FlowError("library_missing")
+    allowed: set[str] | None = None
+    required: set[str] = set()
+    if d.skillset:
+        try:
+            allowed, required = resolve_skillset(d.skillset, tink_home=get_default_tink_home(), project_dir=cwd)
+        except Exception:
+            raise FlowError("skillset_error") from None
+    try:
+        everything = [s for s in load_library_skills(library) if s["name"] not in required]
+    except Exception:
+        raise FlowError("library_unreadable") from None
+
+    def attempt(candidates: list) -> None:
+        d.skills = candidates
+        if not candidates:
+            d.result = RoutingResult(status="no_candidates_available", task=task)
+            return
+        try:
+            d.result = (route_fn or _default_route)(task, candidates, args)
+        except FlowError:
+            raise
+        except Exception:
+            raise FlowError("route_failed") from None
+
+    attempt(everything if allowed is None else [s for s in everything if s["name"] in allowed])
+    if not d.routed and allowed is not None and not args.strict:
+        d.scope = "library"
+        attempt(everything)
+
+    if d.routed:
+        assert d.result is not None and d.result.winner is not None
+        d.skill = d.result.winner
+        if not is_valid_skill_name(d.skill) or d.skill not in {s["name"] for s in d.skills}:
+            raise FlowError("invalid_winner")
+
+
+def pick_json(d: Decision, task: str) -> dict:
+    """The routing decision as JSON. Never includes skill content."""
+    assert d.result is not None
+    out = d.result.to_dict()
+    return {"contract_version": CONTRACT_VERSION, "status": out.pop("status"), "task": out.pop("task"),
+            "skillset": d.skillset, "scope": d.scope, **out}
+
+
+def pick(args: Any, *, route_fn: RouteFn | None = None) -> int:
+    """`--pick`: decide only. Mounts nothing, writes nothing. Exit 0 routed, 1 no skill, 2 error."""
+    task = args.task.strip()
+    d = Decision(args.skillset)
+    try:
+        decide(d, task, args, Path.cwd(), route_fn)
+    except FlowError as e:
+        if args.json:
+            print(json.dumps({"contract_version": CONTRACT_VERSION, "status": "error", "reason": e.reason}, indent=2))
+        else:
+            sys.stderr.write(failure_text(e.reason, d.skill))
+        return 2
+    if args.json:
+        print(json.dumps(pick_json(d, task), indent=2))
+    elif d.routed:
+        conf = d.result.confidence if d.result.confidence is not None else 0.0  # type: ignore[union-attr]
+        print(f"Skill: {d.skill} (confidence {conf:.2f})")
+    else:
+        print(PICK_NO_SKILL_MESSAGE)
+    return 0 if d.routed else 1
 
 
 def _emit(args: Any, rec: dict, text: str, content: str | None) -> None:
@@ -183,33 +270,14 @@ def _emit(args: Any, rec: dict, text: str, content: str | None) -> None:
         sys.stdout.flush()
 
 
-def run_use(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessExecutor | None = None) -> int:
-    # Usage errors: one stderr line, no receipt, no routing.
-    for flag, on in (("--install", args.install), ("--prune", args.prune or args.task == "prune"),
-                     ("--multi", args.multi)):
-        if on:
-            print(f"tink-route: error: --use cannot be combined with {flag}.", file=sys.stderr)
-            return 2
-    task = (args.task or "").strip()
-    if not task:
-        print('tink-route: error: --use requires a task: tink-route --use "<what you need>".', file=sys.stderr)
-        return 2
-    if getattr(args, "stage_only", False) and not (args.skillset or args.stage):
-        print("tink-route: error: --stage-only needs --stage or --skillset.", file=sys.stderr)
-        return 2
-    if args.inline_max < 0:
-        print("tink-route: error: --inline-max must be >= 0.", file=sys.stderr)
-        return 2
-    if executor is None:
-        from .adapters.executor import DefaultSubprocessExecutor
-
-        executor = DefaultSubprocessExecutor()
-
-    skillset = args.skillset or (STAGE_TO_SKILLSET.get(args.stage) if args.stage else None)
+def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessExecutor) -> int:
+    """Default mode: route, verify with tink, print the skill. Exit 0 delivered, 1 no skill, 2 failed."""
+    task = args.task.strip()
+    d = Decision(args.skillset)
     rec: dict[str, Any] = {
-        "task": args.task, "skillset": skillset, "status": "error", "skill": None,
+        "task": args.task, "skillset": d.skillset, "status": "error", "skill": None,
         "tree_digest": None, "chars": None, "delivery": "none", "confidence": None,
-        "reason": None, "path": None, "scope": "skillset" if skillset else "library",
+        "reason": None, "path": None, "scope": d.scope,
     }
     content: str | None = None
     text = ""
@@ -217,64 +285,28 @@ def run_use(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
     cwd = Path.cwd()
 
     try:
-        library = Path(args.library)
-        if not library.is_dir():
-            raise UseError("library_missing")
-        required: set[str] = set()
-        allowed: set[str] | None = None
-        if skillset:
-            try:
-                allowed, required = resolve_skillset(
-                    skillset, tink_home=get_default_tink_home(), project_dir=cwd)
-            except Exception:
-                raise UseError("skillset_error") from None
         try:
-            skills = load_library_skills(library)
-        except Exception:
-            raise UseError("library_unreadable") from None
-        if allowed is not None:
-            skills = [s for s in skills if s["name"] in allowed]
-        skills = [s for s in skills if s["name"] not in required]
-
-        def attempt(candidates: list) -> RoutingResult | None:
-            if not candidates:
-                rec["reason"] = "no_candidates"
-                return None
-            try:
-                res = (route_fn or _default_route)(task, candidates, args)
-            except UseError:
-                raise
-            except Exception:
-                raise UseError("route_failed") from None
-            rec["confidence"] = res.confidence
-            rec["reason"] = res.status
-            return res
-
-        result = attempt(skills)
-        if ((result is None or result.status != "routed" or not result.winner)
-                and allowed is not None and not getattr(args, "stage_only", False)):
-            # A stage skillset is a hint, not a wall: retry once over the whole library
-            # (the stage's required disciplines are still excluded).
-            skills = [s for s in load_library_skills(library) if s["name"] not in required]
-            rec["scope"] = "library"
-            result = attempt(skills)
-
-        if result is None or result.status != "routed" or not result.winner:
+            decide(d, task, args, cwd, route_fn)
+        finally:
+            rec["scope"] = d.scope
+            rec["skill"] = d.skill
+            if d.result is not None:
+                rec["confidence"] = d.result.confidence
+                rec["reason"] = d.result.status
+        if not d.routed:
             rec["status"] = "no_skill"
             text = NO_SKILL_MESSAGE + "\n"
             code = 1
         else:
-            name = result.winner
-            rec["skill"] = name
-            if not is_valid_skill_name(name) or name not in {s["name"] for s in skills}:
-                raise UseError("invalid_winner")
+            assert d.result is not None and d.skill is not None
+            name = d.skill
             data = _mount(executor, name, cwd, payload=True)
             payload = data["payload"]["content"]
             chars = data["payload"].get("chars")
             chars = chars if isinstance(chars, int) and not isinstance(chars, bool) else len(payload)
             rec.update(tree_digest=data["tree_digest"], chars=chars)
-            conf = result.confidence if result.confidence is not None else 0.0
-            outside = f", outside the {skillset} skillset" if skillset and rec["scope"] == "library" else ""
+            conf = d.result.confidence if d.result.confidence is not None else 0.0
+            outside = f", outside the {d.skillset} skillset" if d.skillset and d.scope == "library" else ""
             header = (f"# tink skill: {name}  (digest {data['tree_digest']}, {chars} chars, "
                       f"confidence {conf:.2f}{outside})\n")
             base = f".tink/.active/{name}"
@@ -298,7 +330,7 @@ def run_use(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
             rec["status"] = "delivered"
             rec["reason"] = None
             code = 0
-    except UseError as e:
+    except FlowError as e:
         rec.update(status="error", reason=e.reason, delivery="none", path=None)
         rec.update(tree_digest=None, chars=None)
         content = None
