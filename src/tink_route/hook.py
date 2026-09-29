@@ -236,10 +236,10 @@ def _route(task: str, project: Path, cfg: dict[str, Any], deadline: float) -> tu
     status = out.get("status")
     if status == "no_skill_needed":
         return None, "no_skill"
+    if status not in ("routed", "multi_routed"):
+        return None, "no_skill" if ran[0] in (0, 1) else "router_error"
     if ran[0] != 0:
         return None, "router_error"
-    if status not in ("routed", "multi_routed"):
-        return None, "no_skill"
     winner = out.get("winner")
     if isinstance(winner, str) and is_valid_skill_name(winner):
         return winner, None

@@ -51,6 +51,10 @@ if mode == "badversion":
 if mode == "noskill":
     print(json.dumps({"contract_version": 1, "status": "no_skill_needed"}))
     sys.exit(1)
+if mode == "uncertain":
+    print(json.dumps({"contract_version": 1, "status": "uncertain", "top_candidate": arg, "confidence": 0.44,
+                      "threshold": 0.6}))
+    sys.exit(1)
 if mode == "error":
     print(json.dumps({"error": "boom"}))
     sys.exit(2)
@@ -637,7 +641,7 @@ def r4_route_skipped(env):
 def r5_route_router_failures(env):
     env.skill("plain")
     seen = {}
-    for mode, reason in (("noskill", "no_skill"), ("error", "router_error"), ("garbage", "router_error"),
+    for mode, reason in (("noskill", "no_skill"), ("uncertain", "no_skill"), ("error", "router_error"), ("garbage", "router_error"),
                          ("badversion", "router_error")):
         env.config(router=env.fake_router(mode, "plain"))
         p, _ = route(env, route_req(env, Q))
