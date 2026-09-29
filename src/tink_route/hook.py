@@ -1,4 +1,4 @@
-"""tink-hook: Claude Code adapter for ambient skill activation (route -> mount -> inject).
+"""tink-hook: harness-neutral route core plus a Claude Code adapter for ambient skill activation (route -> mount -> inject).
 
 The agent never sees a skill catalog. On each prompt this hook asks the router
 whether one skill applies, has `tink mount --json --payload` verify and read it,
@@ -147,8 +147,14 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
-def run_bounded(argv: list[str], cwd: Path, deadline: float) -> tuple[int, str] | None:
-    """Run argv in its own process group; kill the whole group at the deadline."""
+TIMED_OUT = "timed_out"
+
+
+def run_bounded(argv: list[str], cwd: Path, deadline: float) -> tuple[int, str] | str | None:
+    """Run argv in its own process group; kill the whole group at the deadline.
+
+    Returns (returncode, stdout), TIMED_OUT if the deadline killed it, or None if it did not start.
+    """
     env = dict(os.environ)
     env.pop("TINK_ROUTE_INSTALL", None)
     try:
@@ -169,7 +175,7 @@ def run_bounded(argv: list[str], cwd: Path, deadline: float) -> tuple[int, str] 
             proc.communicate(timeout=1.0)
         except subprocess.SubprocessError:
             pass
-        return None
+        return TIMED_OUT
     return proc.returncode, out.decode("utf-8", errors="replace")
 
 
@@ -212,24 +218,32 @@ def _clear_session(project: Path, session_id: str) -> None:
 
 # ---------------------------------------------------------------- claude-code flow
 
-def _route(task: str, project: Path, cfg: dict[str, Any], deadline: float) -> str | None:
+def _route(task: str, project: Path, cfg: dict[str, Any], deadline: float) -> tuple[str | None, str | None]:
+    """Return (winner, None) or (None, reason slug)."""
     if cfg["router_cmd"]:
         argv = [*cfg["router_cmd"], task]
     else:
         argv = [sys.executable, "-m", "tink_route.cli", "--json", "--deadline", f"{deadline:g}", "--", task]
     ran = run_bounded(argv, project, deadline)
-    if ran is None or ran[0] != 0:
-        return None
+    if ran is None or ran == TIMED_OUT:
+        return None, "router_timeout" if ran == TIMED_OUT else "router_error"
     try:
         out = json.loads(ran[1])
     except ValueError:
-        return None
+        return None, "router_error"
     if not isinstance(out, dict) or out.get("contract_version") != CONTRACT_VERSION:
-        return None
-    if out.get("status") not in ("routed", "multi_routed"):
-        return None
+        return None, "router_error"
+    status = out.get("status")
+    if status == "no_skill_needed":
+        return None, "no_skill"
+    if ran[0] != 0:
+        return None, "router_error"
+    if status not in ("routed", "multi_routed"):
+        return None, "no_skill"
     winner = out.get("winner")
-    return winner if isinstance(winner, str) and is_valid_skill_name(winner) else None
+    if isinstance(winner, str) and is_valid_skill_name(winner):
+        return winner, None
+    return None, "router_error"
 
 
 def _mount(skill: str, project: Path, deadline: float) -> tuple[dict[str, Any] | None, str | None]:
@@ -238,7 +252,7 @@ def _mount(skill: str, project: Path, deadline: float) -> tuple[dict[str, Any] |
     if not tink:
         return None, None
     ran = run_bounded([tink, "mount", skill, "--json", "--payload"], project, deadline)
-    if ran is None:
+    if ran is None or ran == TIMED_OUT:
         return None, None
     try:
         out = json.loads(ran[1])
@@ -260,6 +274,103 @@ def _mount(skill: str, project: Path, deadline: float) -> tuple[dict[str, Any] |
         return None, None
     return {"content": content, "digest": digest}, None
 
+
+def _none(reason: str, *, skill: str | None = None, notice: str | None = None) -> dict[str, Any]:
+    return {
+        "contract_version": CONTRACT_VERSION, "action": "none", "skill": skill, "tree_digest": None,
+        "content": None, "notice": notice, "reason": reason,
+    }
+
+
+def _parse_route_request(raw: str) -> tuple[str, Path, int | None] | None:
+    try:
+        req = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(req, dict):
+        return None
+    prompt, session_id, cwd = req.get("prompt"), req.get("session_id"), req.get("cwd")
+    if not isinstance(prompt, str) or not isinstance(session_id, str) or not session_id:
+        return None
+    if not isinstance(cwd, str) or not cwd:
+        return None
+    max_chars = req.get("max_chars")
+    if max_chars is not None and (isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars < 1):
+        return None
+    cwd_path = Path(cwd)
+    if not cwd_path.is_absolute() or not cwd_path.is_dir():
+        return None
+    return prompt, cwd_path, max_chars
+
+
+def route(request: dict[str, Any]) -> dict[str, Any]:
+    """Harness-neutral core: opt-in, kill switch, skip rules, scrub, router, mount, size guard.
+
+    `request` is {"prompt", "session_id", "cwd", "max_chars"?}. Never raises: any error is action none.
+    No dedupe and no harness framing; `content` is the raw mounted payload.
+    """
+    try:
+        return _route_core(request)
+    except Exception:
+        return _none("internal")
+
+
+def _route_core(request: dict[str, Any]) -> dict[str, Any]:
+    parsed = _parse_route_request(json.dumps(request))
+    if parsed is None:
+        return _none("bad_input")
+    prompt, cwd_path, max_chars = parsed
+    project = canonical_project(cwd_path)
+    if any(kill_switch(project).values()):
+        return _none("not_enabled")
+    cfg = load_config()
+    if cfg is None or str(project) not in cfg["projects"]:
+        return _none("not_enabled")
+    text = prompt.strip()
+    if not text or text.startswith("/") or len(text) < MIN_PROMPT_CHARS:
+        return _none("skipped")
+
+    deadline = _env_float("TINK_HOOK_DEADLINE", DEFAULT_DEADLINE, 0.1, 30.0)
+    skill, reason = _route(scrub_secrets(text), project, cfg, deadline)
+    if skill is None:
+        return _none(reason or "router_error")
+
+    mount_deadline = _env_float("TINK_HOOK_MOUNT_DEADLINE", DEFAULT_MOUNT_DEADLINE, 0.1, 30.0)
+    facts, code = _mount(skill, project, mount_deadline)
+    if facts is None:
+        if code is None:
+            return _none("internal", skill=skill)
+        return _none(f"mount_refused:{code}", skill=skill, notice=f"tink: skill {skill} not applied ({code})")
+    if max_chars is not None and len(facts["content"]) > max_chars:
+        return _none("oversize", skill=skill, notice=f"tink: skill {skill} not applied (oversize)")
+    return {
+        "contract_version": CONTRACT_VERSION, "action": "inject", "skill": skill,
+        "tree_digest": facts["digest"], "content": facts["content"],
+        "notice": f"tink: applied skill {skill} ({DISABLE_HINT})", "reason": None,
+    }
+
+
+def cmd_route() -> int:
+    out = _none("internal")
+    try:
+        raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+        parsed = _parse_route_request(raw)
+        if parsed is None:
+            out = _none("bad_input")
+        else:
+            req = json.loads(raw)
+            out = route(req)
+    except BaseException:
+        pass
+    try:
+        sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except BaseException:
+        pass
+    return 0
+
+
+# ---------------------------------------------------------------- claude-code adapter
 
 def _notice(message: str) -> dict[str, Any]:
     return {"systemMessage": message}
@@ -288,44 +399,32 @@ def handle_claude_code(raw: str) -> dict[str, Any] | None:
         return None
     if name != "UserPromptSubmit":
         return None
-
     prompt = event.get("prompt")
     if not isinstance(prompt, str):
         return None
-    if any(kill_switch(project).values()):
-        return None
-    cfg = load_config()
-    if cfg is None or str(project) not in cfg["projects"]:
-        return None
-    text = prompt.strip()
-    if not text or text.startswith("/") or len(text) < MIN_PROMPT_CHARS:
-        return None
 
-    deadline = _env_float("TINK_HOOK_DEADLINE", DEFAULT_DEADLINE, 0.1, 30.0)
-    skill = _route(scrub_secrets(text), project, cfg, deadline)
-    if skill is None:
-        return None
-
+    result = route({"prompt": prompt, "session_id": session_id, "cwd": cwd})
     state = _session_file(project, session_id)
-    seen = _load_seen(state)
-    mount_deadline = _env_float("TINK_HOOK_MOUNT_DEADLINE", DEFAULT_MOUNT_DEADLINE, 0.1, 30.0)
-    facts, code = _mount(skill, project, mount_deadline)
-    if facts is None:
-        if code is None:
+    reason = result["reason"] or ""
+    if result["action"] == "none":
+        if not reason.startswith("mount_refused:"):
             return None
-        key = f"refused:{skill}:{code}"
+        seen = _load_seen(state)
+        key = f"refused:{result['skill']}:{reason.split(':', 1)[1]}"
         if key in seen:
             return None
         _remember(state, seen, key)
-        return _notice(f"tink: skill {skill} not applied ({code})")
+        return _notice(result["notice"])
 
-    key = f"injected:{skill}:{facts['digest']}"
+    skill, digest = result["skill"], result["tree_digest"]
+    seen = _load_seen(state)
+    key = f"injected:{skill}:{digest}"
     if key in seen:
         return None
     context = (
         f"{FRAMING}\n"
-        f'<tink-skill name="{skill}" digest="{facts["digest"]}">\n'
-        f"{facts['content']}\n"
+        f'<tink-skill name="{skill}" digest="{digest}">\n'
+        f"{result['content']}\n"
         "</tink-skill>"
     )
     max_chars = _env_int("TINK_HOOK_MAX_CHARS", DEFAULT_MAX_CHARS, 1, 100_000_000)
@@ -336,7 +435,7 @@ def handle_claude_code(raw: str) -> dict[str, Any] | None:
     _remember(state, seen, key)
     return {
         "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context},
-        "systemMessage": f"tink: applied skill {skill} ({DISABLE_HINT})",
+        "systemMessage": result["notice"],
     }
 
 
@@ -418,8 +517,9 @@ def settings_snippet() -> dict[str, Any]:
 
 
 USAGE = (
-    "usage: tink-hook {claude-code|enable|disable|status|print-settings}\n"
+    "usage: tink-hook {claude-code|route|enable|disable|status|print-settings}\n"
     "  claude-code     Claude Code UserPromptSubmit/SessionStart hook (reads hook JSON on stdin)\n"
+    "  route           harness-neutral core: one JSON request on stdin, one JSON decision on stdout\n"
     "  enable|disable  opt the current project in/out (user-scope $TINK_HOME/hook.json)\n"
     "  status          show opt-in and kill-switch state for the current project\n"
     "  print-settings  print the ~/.claude/settings.json hooks snippet (never writes it)\n"
@@ -431,6 +531,8 @@ def main(argv: list[str] | None = None) -> int:
     cmd = args[0] if args else None
     if cmd == "claude-code":
         return cmd_claude_code()
+    if cmd == "route":
+        return cmd_route()
     if cmd in ("enable", "disable"):
         return cmd_enable(cmd == "enable")
     if cmd == "status":

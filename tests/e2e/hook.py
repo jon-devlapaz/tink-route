@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E2E: `tink-hook claude-code` ambient activation (route -> mount -> inject).
+"""E2E: `tink-hook claude-code` and `tink-hook route` ambient activation (route -> mount -> inject).
 
 Every case runs the real hook entrypoint (`python3 -m tink_route.hook`) as a
 child process with recorded Claude Code hook stdin, an isolated TINK_HOME and
@@ -549,6 +549,230 @@ DETERMINISTIC = [
 ]
 
 
+# ---------------------------------------------------------------- route core cases (harness-neutral)
+
+ROUTE_KEYS = {"contract_version", "action", "skill", "tree_digest", "content", "notice", "reason"}
+
+
+def route_req(env, prompt, *, session="sess-R", max_chars="absent", cwd=None):
+    req = {"prompt": prompt, "session_id": session, "cwd": str(cwd or env.proj)}
+    if max_chars != "absent":
+        req["max_chars"] = max_chars
+    return json.dumps(req)
+
+
+def route(env, stdin, **kw):
+    r, p, elapsed = env.hook(stdin, args=("route",), **kw)
+    expect(r.returncode == 0, f"route exit {r.returncode} stderr={r.stderr[-300:]}")
+    expect(len(r.stdout.splitlines()) == 1 and r.stdout.endswith("\n"), f"not a single JSON line: {r.stdout[:200]!r}")
+    expect(isinstance(p, dict) and set(p) == ROUTE_KEYS, f"bad route keys: {r.stdout[:300]!r}")
+    expect(p["contract_version"] == 1, "contract_version")
+    expect(p["action"] in ("inject", "none"), f"action {p['action']!r}")
+    if p["action"] == "none":
+        expect(p["content"] is None and p["tree_digest"] is None, f"content/digest on none: {r.stdout[:200]!r}")
+        expect(isinstance(p["reason"], str), "reason missing on none")
+    else:
+        expect(p["reason"] is None, "reason set on inject")
+    return p, elapsed
+
+
+def expect_none(p, reason, notice="null"):
+    expect(p["action"] == "none" and p["reason"] == reason, f"want none/{reason}, got {p['action']}/{p['reason']}")
+    if notice != "null":
+        expect(p["notice"] == notice, f"notice {p['notice']!r} != {notice!r}")
+
+
+Q = "please write me a poem about autumn leaves"
+
+
+def r1_route_inject(env):
+    env.skill("plain", body="Always answer in haiku.\n")
+    env.config(router=env.fake_router("routed", "plain"))
+    p, _ = route(env, route_req(env, Q))
+    on_disk = (env.lib / "plain" / "SKILL.md").read_text(encoding="utf-8")
+    expect(p["action"] == "inject" and p["skill"] == "plain", f"{p['action']} {p['skill']}")
+    expect(p["content"] == on_disk, "content is not the raw payload")
+    expect(re.fullmatch(r"sha256:[0-9a-f]{64}", p["tree_digest"] or ""), f"digest {p['tree_digest']!r}")
+    expect(p["notice"] == NOTICE_APPLIED.format("plain"), f"notice {p['notice']!r}")
+    expect("<tink-skill" not in p["content"] and not p["content"].startswith("tink:"), "harness framing in content")
+    expect(len(env.router_calls()) == 1, "router not invoked once")
+    return {"digest": p["tree_digest"]}
+
+
+def r2_route_multi_top1(env):
+    env.skill("plain")
+    env.skill("other", body="OTHER-SKILL-BODY\n")
+    env.config(router=env.fake_router("multi", "plain"))
+    p, _ = route(env, route_req(env, Q))
+    expect(p["skill"] == "plain" and "OTHER-SKILL-BODY" not in json.dumps(p), "runner-up leaked")
+
+
+def r3_route_not_enabled(env):
+    env.skill("plain")
+    env.config(projects=[], router=env.fake_router("routed", "plain"))
+    p, _ = route(env, route_req(env, Q))
+    expect_none(p, "not_enabled", None)
+    (env.home / "hook.json").unlink()
+    p, _ = route(env, route_req(env, Q))
+    expect_none(p, "not_enabled", None)
+    env.config(router=env.fake_router("routed", "plain"))
+    p, _ = route(env, route_req(env, Q), env_extra={"TINK_HOOK": "off"})
+    expect_none(p, "not_enabled", None)
+    (env.proj / ".tink").mkdir(exist_ok=True)
+    (env.proj / ".tink" / "hook.off").write_text("", encoding="utf-8")
+    p, _ = route(env, route_req(env, Q))
+    expect_none(p, "not_enabled", None)
+    expect(env.router_calls() == [], "router invoked while not enabled")
+
+
+def r4_route_skipped(env):
+    env.skill("plain")
+    env.config(router=env.fake_router("routed", "plain"))
+    for text in ("/compact now please do it", "short one", "", "   \n\t  "):
+        p, _ = route(env, route_req(env, text))
+        expect_none(p, "skipped", None)
+    expect(env.router_calls() == [], "router invoked for skipped prompt")
+
+
+def r5_route_router_failures(env):
+    env.skill("plain")
+    seen = {}
+    for mode, reason in (("noskill", "no_skill"), ("error", "router_error"), ("garbage", "router_error"),
+                         ("badversion", "router_error")):
+        env.config(router=env.fake_router(mode, "plain"))
+        p, _ = route(env, route_req(env, Q))
+        expect_none(p, reason, None)
+        seen[mode] = p["reason"]
+    env.config(router=env.fake_router("sleep", "20"))
+    p, elapsed = route(env, route_req(env, Q), env_extra={"TINK_HOOK_DEADLINE": "1.0"})
+    expect_none(p, "router_timeout", None)
+    expect(elapsed < 1.0 + 1.5, f"route took {elapsed:.2f}s")
+    return dict(seen, timeout_elapsed_s=round(elapsed, 3))
+
+
+def r6_route_mount_refused(env):
+    env.skill("plain", body="UNAPPROVED-MARKER-BODY\n", approve=False)
+    env.config(router=env.fake_router("routed", "plain"))
+    p, _ = route(env, route_req(env, Q))
+    expect_none(p, "mount_refused:unapproved", "tink: skill plain not applied (unapproved)")
+    expect("UNAPPROVED-MARKER-BODY" not in json.dumps(p), "unapproved payload leaked")
+    d = env.lib / "linky"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").symlink_to(env.outside / "secret.txt")
+    env.run("tink", "library", "approve", "linky")
+    env.config(router=env.fake_router("routed", "linky"))
+    p, _ = route(env, route_req(env, Q))
+    expect(p["action"] == "none" and p["reason"].startswith("mount_refused:") and p["content"] is None, f"{p}")
+    expect("TOP-SECRET" not in json.dumps(p), "symlink target leaked")
+    return {"symlink_reason": p["reason"]}
+
+
+def r7_route_no_dedupe(env):
+    env.skill("plain")
+    env.config(router=env.fake_router("routed", "plain"))
+    a, _ = route(env, route_req(env, Q, session="same"))
+    b, _ = route(env, route_req(env, Q, session="same"))
+    expect(a["action"] == b["action"] == "inject" and a == b, "second identical route differs / deduped")
+    expect(not (env.proj / ".tink" / ".active" / ".sessions").exists(), "route wrote session state")
+
+
+def r8_route_large_null_guard(env):
+    unit = "Line with unicode \u00e9\u4e2d\U0001f600 and tabs\t and quotes \"x\" <tag> & \\ backslash.\n"
+    body = unit * (150000 // len(unit))
+    env.skill("big", body=body)
+    env.config(router=env.fake_router("routed", "big"))
+    for mc in (None, "absent"):
+        p, _ = route(env, route_req(env, Q, max_chars=mc))
+        expect(p["action"] == "inject", f"{mc!r}: {p['action']}/{p['reason']}")
+        expect(p["content"] == (env.lib / "big" / "SKILL.md").read_text(encoding="utf-8"), "not byte-exact")
+        expect(len(p["content"]) > 140000, "payload shrank")
+    return {"payload_chars": len(p["content"])}
+
+
+def r9_route_oversize(env):
+    env.skill("big", body="X" * 5000 + "\n")
+    env.config(router=env.fake_router("routed", "big"))
+    p, _ = route(env, route_req(env, Q, max_chars=1000))
+    expect_none(p, "oversize", "tink: skill big not applied (oversize)")
+    expect("XXXXXXXXXX" not in json.dumps(p), "payload fragment leaked")
+    p, _ = route(env, route_req(env, Q, max_chars=100000))
+    expect(p["action"] == "inject", "under-limit not injected")
+
+
+def r10_route_malformed(env):
+    env.skill("plain")
+    env.config(router=env.fake_router("routed", "plain"))
+    good = {"prompt": Q, "session_id": "s", "cwd": str(env.proj)}
+    variants = {
+        "empty": "", "not_json": "this is not json", "array": "[1,2,3]", "null": "null", "empty_object": "{}",
+        "binaryish": "\x00\x01{\"a\":", "huge": "x" * 2_000_000,
+        "missing_prompt": json.dumps({k: v for k, v in good.items() if k != "prompt"}),
+        "missing_cwd": json.dumps({k: v for k, v in good.items() if k != "cwd"}),
+        "missing_session": json.dumps({k: v for k, v in good.items() if k != "session_id"}),
+        "prompt_not_string": json.dumps(dict(good, prompt=42)),
+        "cwd_relative": json.dumps(dict(good, cwd="proj")),
+        "cwd_missing_dir": json.dumps(dict(good, cwd=str(env.root / "nope"))),
+        "max_chars_string": json.dumps(dict(good, max_chars="lots")),
+        "max_chars_zero": json.dumps(dict(good, max_chars=0)),
+    }
+    for name, stdin in variants.items():
+        p, _ = route(env, stdin)
+        expect(p["action"] == "none" and p["reason"] == "bad_input" and p["notice"] is None, f"{name}: {p}")
+    expect(env.router_calls() == [], "router invoked on bad input")
+    return {"variants": len(variants)}
+
+
+def r11_route_scrub(env):
+    env.config(router=env.fake_router("noskill"))
+    text = (
+        "Help me debug my deploy script. My key is sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 and "
+        "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123, aws AKIAIOSFODNN7EXAMPLE, slack "
+        "xoxb-123456789012-abcdefghijkl. Config has password=hunter2-supersecret and\n"
+        "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\n-----END PRIVATE KEY-----\n"
+        "sha 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 blob "
+        "eyJhbGciOiJIUzI1NiJ9QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OTA done."
+    )
+    p, _ = route(env, route_req(env, text))
+    expect_none(p, "no_skill", None)
+    calls = env.router_calls()
+    expect(len(calls) == 1, "router not invoked")
+    sent = " ".join(calls[0]["argv"])
+    for s in SECRETS:
+        expect(s not in sent, f"secret leaked to router: {s[:12]}...")
+    expect("debug my deploy script" in sent, "benign text removed")
+    return {"sent": sent}
+
+
+def r12_claude_code_still_frames(env):
+    """The claude-code adapter is a formatter over route: framing + dedupe stay adapter-side."""
+    env.skill("plain")
+    env.config(router=env.fake_router("routed", "plain"))
+    p, _ = route(env, route_req(env, Q, session="sess-A"))
+    r, cc, _ = env.hook(env.prompt(Q, session="sess-A"))
+    digest, content = assert_injected(env, r, cc, "plain")
+    expect(digest == p["tree_digest"] and content == p["content"], "adapter and core disagree")
+    r, cc, _ = env.hook(env.prompt(Q, session="sess-A"))
+    assert_silent(r, cc, "adapter dedupe")
+    p2, _ = route(env, route_req(env, Q, session="sess-A"))
+    expect(p2["action"] == "inject", "core deduped")
+
+
+ROUTE_CASES = [
+    ("R1", "route: routed -> exact payload/digest/skill/notice", r1_route_inject),
+    ("R2", "route: multi_routed -> top-1 only", r2_route_multi_top1),
+    ("R3", "route: not opted in / kill switches -> none, router never invoked", r3_route_not_enabled),
+    ("R4", "route: slash/short/empty -> skipped", r4_route_skipped),
+    ("R5", "route: no_skill/error/garbage/bad version/timeout slugs", r5_route_router_failures),
+    ("R6", "route: mount refusal (unapproved, symlink) -> mount_refused:<code>", r6_route_mount_refused),
+    ("R7", "route: no dedupe, no session state", r7_route_no_dedupe),
+    ("R8", "route: max_chars null/absent, 150k payload byte-exact", r8_route_large_null_guard),
+    ("R9", "route: small max_chars -> oversize + notice", r9_route_oversize),
+    ("R10", "route: malformed stdin -> bad_input, exit 0", r10_route_malformed),
+    ("R11", "route: secret scrub before router", r11_route_scrub),
+    ("R12", "claude-code adapter frames/dedupes over the same core", r12_claude_code_still_frames),
+]
+
+
 # ---------------------------------------------------------------- live cases
 
 def live_env(env):
@@ -621,10 +845,21 @@ def l3_router_contract_readonly(env):
     return {"action": act, "files_snapshotted": len(before)}
 
 
+def l4_route_eli5(env):
+    live_env(env)
+    p, elapsed = route(env, route_req(env, "Explain like I'm five: how does a hash map work?"))
+    expect(elapsed < 3.0, f"route wall time {elapsed:.2f}s >= 3s")
+    expect(p["action"] == "inject" and p["skill"] == "eli5", f"{p['action']}/{p['reason']}/{p['skill']}")
+    expect(p["content"] == (env.lib / "eli5" / "SKILL.md").read_text(encoding="utf-8"), "content mismatch")
+    expect(p["notice"] == NOTICE_APPLIED.format("eli5"), f"notice {p['notice']!r}")
+    return {"elapsed_s": round(elapsed, 3)}
+
+
 LIVE = [
     ("L1", "live: ELI5 prompt routes + injects eli5 < 3s", l1_eli5),
     ("L2", "live: unrelated prompt injects nothing < 3s", l2_unrelated),
     ("L3", "live: router contract fields + read-only tree proof", l3_router_contract_readonly),
+    ("L4", "live: route core ELI5 prompt -> inject eli5 < 3s", l4_route_eli5),
 ]
 
 
@@ -638,7 +873,7 @@ def main():
     tink_version = subprocess.run([str(TINK_BIN), "--version"], capture_output=True, text=True).stdout.strip()
     have_key = bool(os.environ.get("TYPESAFE_API_KEY"))
     results = []
-    for cid, title, fn in DETERMINISTIC + LIVE:
+    for cid, title, fn in DETERMINISTIC + ROUTE_CASES + LIVE:
         if only and cid not in only:
             continue
         if cid.startswith("L") and not have_key:

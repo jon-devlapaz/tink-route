@@ -73,6 +73,48 @@ tink-hook status                      # opt-in and kill-switch state for the cur
 
 The process exits 0 on every path, including exceptions, no subcommand and unknown subcommands.
 
+## `tink-hook route` (harness-neutral core)
+
+`tink-hook claude-code` is a thin formatter over one function, `route(request) -> dict`. Other
+harnesses (for example a Pi TypeScript extension) call the same core through `tink-hook route` and do
+their own framing, dedupe and display. The core runs the full pipeline above (opt-in, kill switches,
+skip rules, secret scrub, router in a killed-at-deadline child, top-1 winner, `tink mount <skill> --json
+--payload`, `contract_version` checks, user-scope `router_cmd`). It does not dedupe and does not
+frame: `content` is the raw `payload.content`.
+
+Stdin is one JSON object:
+
+```json
+{"prompt": "...", "session_id": "...", "cwd": "/abs/dir", "max_chars": null}
+```
+
+`max_chars` is optional. `null` or absent means no size guard. Otherwise it is a positive integer, and
+content longer than it is not injected. `session_id` is required but unused by the core.
+
+Stdout is exactly one JSON line, and the exit code is always 0. Any error or garbage input gives
+`action: "none"`:
+
+```json
+{"contract_version": 1, "action": "inject", "skill": "eli5", "tree_digest": "sha256:...",
+ "content": "<payload>", "notice": "tink: applied skill eli5 (disable: TINK_HOOK=off)", "reason": null}
+```
+
+| `action` | fields |
+| --- | --- |
+| `inject` | `skill`, `tree_digest`, `content`, `notice` set; `reason` is null |
+| `none` | `content` and `tree_digest` are null; `reason` is a slug; `skill` is set only when a skill was chosen |
+
+`reason` slugs: `not_enabled` (not opted in, `TINK_HOOK=off` or `.tink/hook.off`), `skipped` (empty,
+slash or short prompt), `no_skill`, `router_timeout`, `router_error`, `mount_refused:<code>`,
+`oversize`, `bad_input`, `internal`. `notice` is null for every silent reason (`not_enabled`,
+`skipped`, `no_skill`, `router_timeout`, `router_error`, `bad_input`). For `mount_refused:<code>` it is
+`tink: skill <name> not applied (<code>)`, and for `oversize` it is `tink: skill <name> not applied
+(oversize)`. `internal` also covers a `tink mount` failure that has no refusal code.
+
+The claude-code adapter adds only: per-session dedupe, the `<tink-skill>` framing,
+`additionalContext`/`systemMessage` output, its own `TINK_HOOK_MAX_CHARS` guard on the framed context,
+and SessionStart compact/clear handling.
+
 ## Router contract (additive)
 
 `tink-route --json` now includes `"contract_version": 1` and `"action"`. For routed results `action` is
