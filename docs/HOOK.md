@@ -171,3 +171,14 @@ Assumed or not yet measured:
   compaction clears the dedupe state so the skill can be injected again.
 - How `systemMessage` is rendered, for example its styling or whether it is shown in non-interactive
   modes, has not been checked in a live Claude Code session.
+
+## Install and first run
+
+1. Install or upgrade tink-route so the `tink-hook` console script exists. An editable
+   install made before `tink-hook` was added keeps stale metadata and does not have it:
+   run `pip install -e .` again (or `pipx install --force .`). Check with `tink-hook status`.
+2. Use `tink` v1.0.43 or newer (`tink update`); older builds lack `tink mount --json --payload`.
+3. Review your library, then `tink library approve --all`. Symlinked skills are refused; run
+   `tink doctor` to list them.
+4. Opt a project in with `tink-hook enable` (or `/tink-skills on` in Pi). Opt-in lives in
+   user-scope config, never in the repo.
