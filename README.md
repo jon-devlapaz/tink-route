@@ -174,6 +174,28 @@ Supported stage aliases: `plan`, `design`, `build`, `test`, `deploy`, `maintain`
 
 When constrained, candidate discovery is pre-filtered against `$TINK_HOME/skillsets/<name>[-skillset].json` (or `.tink-skillset.json`), shrinking Jev tournament batches and preventing stage leakage (e.g. asking an architecture task during Stage 4 cleanly exits with `1`).
 
+### 9. Agent-Initiated Skills (`--use`)
+Stage disciplines are compiled into `AGENTS.md` by `tink use`. `tink-route --use` is the agent-initiated path for *capability gaps*: the agent runs one command, the router picks a skill from a small candidate set, `tink mount --json --payload` verifies it (approved, unchanged, no symlinks), and the skill text comes back on stdout as a normal command result. No hooks, no per-prompt routing.
+
+Add one line to `AGENTS.md`:
+
+```
+When a task needs a specialised procedure you do not already know, run: tink-route --use --stage <stage> "<what you need>" and follow the output; if it exits non-zero, continue without it.
+```
+
+```bash
+tink-route --use --stage build "assess what this change could break"
+tink-route --use --skillset testing-skillset --json "write a regression test that fails for the right reason"
+```
+
+- **Candidates:** the library (or the `--stage` / `--skillset` members) minus the pin's `required` list, since those disciplines are already in `AGENTS.md`.
+- **Stage is a hint, not a wall:** if the stage skillset yields no skill, `--use` retries once over the whole library (still excluding that stage's `required` disciplines), and the header says `outside the <skillset> skillset`. Pass `--stage-only` to disable the retry. Real example: `--stage build` finds `blast-radius`, which lives in the design skillset.
+- **Exit codes:** `0` skill delivered, `1` no specialist skill applies, `2` selected but could not be delivered (refused mount, missing `tink`, router failure) or usage error (`--use` cannot be combined with `-i`, `--prune`, `--multi`).
+- **Delivery:** skills up to `--inline-max` chars (default 12000) are printed in full under a one-line header (`# tink skill: <name>  (digest, chars, confidence)`). Larger ones are mounted with `tink mount <name>` and the output points at `.tink/.active/<name>/SKILL.md`; content is never truncated.
+- **Fail open:** any problem prints one line ("...proceed without it.") and exits non-zero; partial skill content is never printed after a refusal.
+- **`--json`:** `{contract_version, status: delivered|no_skill|error, skill, tree_digest, chars, delivery: inline|path|none, path, confidence, content, reason, scope: skillset|library}`.
+- **Receipts:** `--receipt PATH` (or `TINK_ROUTE_RECEIPT`) appends one JSON line per invocation (`ts, task, skillset, status, skill, tree_digest, chars, delivery, confidence, reason, scope`), including no-skill and error outcomes. Writes use `O_APPEND` under `flock` on `PATH.lock`; symlinked receipt paths are refused; a receipt failure only prints a stderr warning and never changes stdout or the exit code.
+
 ---
 
 ## System Architecture

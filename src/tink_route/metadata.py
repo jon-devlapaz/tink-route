@@ -144,7 +144,18 @@ def resolve_skillset_members(
     tink_home: Path | None = None,
     project_dir: Path | None = None,
 ) -> set[str]:
-    """Resolve member skill names from a skillset pin or directory.
+    """Resolve member skill names from a skillset pin or directory (see resolve_skillset)."""
+    return resolve_skillset(skillset_name, tink_home, project_dir)[0]
+
+
+def resolve_skillset(
+    skillset_name: str,
+    tink_home: Path | None = None,
+    project_dir: Path | None = None,
+) -> tuple[set[str], set[str]]:
+    """Resolve (members, required) from a skillset pin or directory.
+
+    `required` is the optional list of members `tink use` compiles into AGENTS.md.
 
     Checks:
     1. $TINK_HOME/skillsets/<canonical>.json
@@ -185,7 +196,10 @@ def resolve_skillset_members(
             members = data.get("members")
             if not isinstance(members, list):
                 raise SkillsetError(f"Skillset file '{candidate}' missing 'members' array")
-            return set(members)
+            required = data.get("required", [])
+            if not isinstance(required, list) or not all(isinstance(r, str) for r in required):
+                raise SkillsetError(f"Skillset file '{candidate}' has a malformed 'required' array")
+            return set(members), set(required)
 
     raise SkillsetError(
         f"Skillset '{skillset_name}' not found. Searched under {skillset_dir}"
