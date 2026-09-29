@@ -43,6 +43,15 @@ def build_parser() -> argparse.ArgumentParser:
         prog="tink-route",
         description="Dynamic Agent Skill Router using TypeSafe Jev.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Agent-initiated skills (--use):\n"
+            "  Add one line to AGENTS.md:\n"
+            "    When a task needs a specialised procedure you do not already know, run:\n"
+            "    tink-route --use --stage <stage> \"<what you need>\" and follow the output;\n"
+            "    if it exits non-zero, continue without it.\n"
+            "  Exit codes: 0 skill delivered, 1 no skill applies, 2 could not deliver / usage.\n"
+            "  Skillset `required` disciplines are never offered (tink use already compiled them)."
+        ),
     )
     parser.add_argument(
         "-v",
@@ -152,6 +161,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Convenience alias: constrain candidates to the SDLC stage's skillset.",
     )
     parser.add_argument(
+        "--use",
+        action="store_true",
+        help="Agent-initiated skill: route the task, verify the winner with `tink mount --payload`, "
+        "and print its instructions to stdout. Exit 0 delivered, 1 no skill applies, 2 could not deliver. "
+        "Fails open: on any problem, proceed without a skill.",
+    )
+    parser.add_argument(
+        "--receipt",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="With --use: append one JSON line per invocation to PATH (env: TINK_ROUTE_RECEIPT).",
+    )
+    parser.add_argument(
+        "--stage-only",
+        action="store_true",
+        help="With --use and --stage/--skillset: do not fall back to the whole library when the "
+        "skillset yields no skill.",
+    )
+    parser.add_argument(
+        "--inline-max",
+        type=int,
+        default=12000,
+        metavar="N",
+        help="With --use: skills up to N chars are printed inline, larger ones are mounted and "
+        "read by path (default: 12000).",
+    )
+    parser.add_argument(
         "--deadline",
         type=float,
         default=None,
@@ -245,9 +282,9 @@ def _print_route(result: RoutingResult, *, installing: bool) -> None:
             )
 
 
-def main() -> int:
+def main(argv: Optional[list[str]] = None, *, route_fn=None) -> int:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.library is None:
         if DEFAULT_LIBRARY_PATH != (Path.home() / ".tink-library" / "skills"):
@@ -256,6 +293,11 @@ def main() -> int:
             args.library = get_default_library_path()
     else:
         args.library = Path(args.library)
+
+    if args.use:
+        from .use import run_use
+
+        return run_use(args, route_fn=route_fn, executor=_DEFAULT_EXECUTOR)
 
     # Handle prune command (either `tink-route prune` or `tink-route --prune`)
     if args.task == "prune" or args.prune:
