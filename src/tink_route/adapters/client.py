@@ -8,6 +8,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from .. import __version__
 from ..core.constants import (
     BATCH_SIZE,
     DEFAULT_MODEL,
@@ -97,7 +98,7 @@ class JevRouterClient:
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "tink-route/0.5.2",
+                "User-Agent": f"tink-route/{__version__}",
             },
             method="POST",
         )

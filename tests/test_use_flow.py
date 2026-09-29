@@ -172,7 +172,8 @@ class TestRefusals(UseFlowCase):
         code, out, err = self.run_cli(["--use", "t"])
         self.assertEqual(code, 2)
         self.assertEqual(
-            out, "Skill 'alpha' was selected but could not be delivered (unapproved); proceed without it.\n")
+            out, "Skill 'alpha' was selected but could not be delivered: it is not approved "
+                 "(review it, then run `tink library approve alpha`); proceed without it.\n")
         self.assertNotIn("TOP-SECRET", out + err)
         self.assertFalse((self.proj / ".tink/.active/alpha").exists())
 
@@ -205,7 +206,8 @@ class TestRefusals(UseFlowCase):
             code, out, _ = self.run_cli(["--use", "t"])
         self.assertEqual(code, 2)
         self.assertEqual(
-            out, "Skill 'alpha' was selected but could not be delivered (tink_not_found); proceed without it.\n")
+            out, "Skill 'alpha' was selected but could not be delivered: the `tink` CLI is not on PATH "
+                 "(install it or fix PATH); proceed without it.\n")
 
     def test_router_failure_fails_open(self) -> None:
         self.add_skill("alpha")
@@ -341,7 +343,8 @@ class TestReceipts(UseFlowCase):
         self.assertTrue(lines[0]["ts"].endswith("Z"))
         self.assertEqual(lines[1]["reason"], "uncertain")
         self.assertEqual(lines[2]["skillset"], "x")
-        self.assertTrue((self.tmp / "deep/dir/receipts.jsonl.lock").exists())
+        self.assertFalse((self.tmp / "deep/dir/receipts.jsonl.lock").exists())
+        self.assertEqual(sorted(p.name for p in rp.parent.iterdir()), ["receipts.jsonl"])
 
     def test_env_var(self) -> None:
         self.add_skill("alpha")
@@ -389,6 +392,124 @@ class TestReceipts(UseFlowCase):
         self.run_cli(["--use", "t"])
         top = sorted(p.name for p in self.proj.iterdir() if p.name != ".git")
         self.assertEqual(top, [".tink"] if (self.proj / ".tink").exists() else [])
+
+
+class TestPlainMessages(UseFlowCase):
+    """User-facing failure text: plain sentence plus the fix; slug stays in --json and receipts."""
+
+    def failrun(self, argv, route_fn=None, env=None):
+        with patch.dict(os.environ, env or {}):
+            return self.run_cli(argv, route_fn)
+
+    def check_slug(self, argv, slug, expected, route_fn=None, env=None):
+        code, out, _ = self.failrun(argv, route_fn, env)
+        self.assertEqual((code, out), (2, expected), slug)
+        code, out, _ = self.failrun(argv + ["--json"], route_fn, env)
+        self.assertEqual(json.loads(out)["reason"], slug)
+
+    def test_no_api_key(self) -> None:
+        self.add_skill("alpha")
+        out, err = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            os.environ.pop("TYPESAFE_API_KEY", None)
+            code = cli.main(["--use", "t"])
+        self.assertEqual(code, 2)
+        self.assertEqual(out.getvalue(),
+                         "Skill routing unavailable: TYPESAFE_API_KEY is not set (set it to enable skill routing); proceed without a skill.\n")
+
+    def test_route_failed(self) -> None:
+        self.add_skill("alpha")
+
+        def boom(task, skills, args):
+            raise RuntimeError("network down")
+        self.check_slug(["--use", "t"], "route_failed",
+                        "Skill routing unavailable: the routing service call failed (network or API error; "
+                        "retry later); proceed without a skill.\n", boom)
+
+    def test_library_missing(self) -> None:
+        self.check_slug(["--use", "--library", str(self.tmp / "nope"), "t"], "library_missing",
+                        "Skill routing unavailable: the skill library was not found (default ~/.tink-library/skills or "
+                        "$TINK_HOME/skills; override with --library); proceed without a skill.\n")
+
+    def test_library_unreadable(self) -> None:
+        self.add_skill("alpha")
+        with patch("tink_route.use.load_library_skills", side_effect=OSError("x")):
+            self.check_slug(["--use", "t"], "library_unreadable",
+                            "Skill routing unavailable: the skill library could not be read (run `tink doctor`); "
+                            "proceed without a skill.\n")
+
+    def test_skillset_error(self) -> None:
+        self.add_skill("alpha")
+        self.check_slug(["--use", "--skillset", "nope", "t"], "skillset_error",
+                        "Skill routing unavailable: the skillset could not be resolved (see `tink skillset list` or "
+                        "check the pin under $TINK_HOME/skillsets); proceed without a skill.\n")
+
+    def test_unknown_slug_names_it(self) -> None:
+        self.add_skill("alpha")
+        self.check_slug(["--use", "t"], "invalid_winner",
+                        "Skill 'ghost' was selected but could not be delivered (invalid_winner); "
+                        "proceed without it.\n",
+                        self.router(winner="ghost"))
+
+    def test_digest_mismatch(self) -> None:
+        d = self.add_skill("alpha", "original")
+        self.approve()
+        (d / "SKILL.md").write_text(skill_md("alpha", "alpha specialist", "TAMPERED"))
+        code, out, _ = self.run_cli(["--use", "--json", "t"])
+        reason = json.loads(out)["reason"]
+        self.assertEqual(reason, "digest_mismatch")
+        code, out, _ = self.run_cli(["--use", "t"])
+        self.assertEqual(out, "Skill 'alpha' was selected but could not be delivered: it changed since "
+                              "approval (review it, then run `tink library approve alpha`); "
+                              "proceed without it.\n")
+
+    def test_symlink_refused(self) -> None:
+        d = self.home / "skills/alpha"
+        d.mkdir()
+        outside = self.tmp / "outside.md"
+        outside.write_text(skill_md("alpha", "alpha specialist", "x"))
+        os.symlink(outside, d / "SKILL.md")
+        self.approve()
+        _, out, _ = self.run_cli(["--use", "--json", "t"])
+        slug = json.loads(out)["reason"]
+        _, out, _ = self.run_cli(["--use", "t"])
+        if slug == "symlink_refused":
+            self.assertEqual(out, "Skill 'alpha' was selected but could not be delivered: a symlink was "
+                                  "found in the skill (replace it with a real copy); proceed without it.\n")
+        else:
+            self.assertIn("could not be delivered", out)
+
+    def test_unmapped_delivery_slug_generic(self) -> None:
+        self.add_skill("alpha")
+        self.approve()
+        with patch("tink_route.use._mount", side_effect=__import__("tink_route.use", fromlist=["x"]).UseError("weird_code")):
+            _, out, _ = self.run_cli(["--use", "t"])
+        self.assertEqual(out, "Skill 'alpha' was selected but could not be delivered (weird_code); "
+                              "proceed without it.\n")
+
+    def test_receipt_keeps_slug(self) -> None:
+        self.add_skill("alpha")
+        rp = self.tmp / "r.jsonl"
+        self.run_cli(["--use", "--receipt", str(rp), "t"])
+        self.assertEqual(self.receipt_lines(rp)[0]["reason"], "unapproved")
+
+
+class TestReceiptLocking(UseFlowCase):
+    def test_no_sidecar_and_file_perms(self) -> None:
+        from tink_route.use import _write_receipt
+        rp = self.tmp / "sub/r.jsonl"
+        _write_receipt(rp, {"a": 1})
+        _write_receipt(rp, {"a": 2})
+        self.assertEqual(sorted(p.name for p in rp.parent.iterdir()), ["r.jsonl"])
+        self.assertEqual(len(rp.read_text().splitlines()), 2)
+        self.assertEqual(rp.stat().st_mode & 0o777, 0o644 & ~os.umask(0))
+
+    def test_flock_taken_on_receipt_descriptor(self) -> None:
+        from tink_route import use
+        rp = self.tmp / "r.jsonl"
+        with patch.object(use.fcntl, "flock") as fl:
+            use._write_receipt(rp, {"a": 1})
+        self.assertEqual(fl.call_count, 2)  # LOCK_EX then LOCK_UN
 
 
 if __name__ == "__main__":

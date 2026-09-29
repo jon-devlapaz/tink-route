@@ -66,32 +66,67 @@ def _default_route(task: str, skills: list, args: Any) -> RoutingResult:
 
 
 def _write_receipt(path: Path, record: dict) -> None:
-    """Append one JSON line under flock. Raises OSError/ValueError on any problem."""
+    """Append one JSON line, flock'd on the receipt's own descriptor (no sidecar file).
+
+    Raises OSError/ValueError on any problem.
+    """
     if path.is_symlink():
         raise OSError("refusing symlinked receipt path")
     path.parent.mkdir(parents=True, exist_ok=True)
     line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
-    lock_fd = None
+    fd = os.open(
+        path,
+        os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+        0o644,
+    )
     try:
         if fcntl is not None:
-            lock_path = str(path) + ".lock"
-            if os.path.islink(lock_path):
-                raise OSError("refusing symlinked receipt lock path")
-            lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        fd = os.open(
-            path,
-            os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
+            fcntl.flock(fd, fcntl.LOCK_EX)
         try:
             if os.write(fd, line) != len(line):
                 raise OSError("short write")
         finally:
-            os.close(fd)
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
-        if lock_fd is not None:
-            os.close(lock_fd)  # closing releases the flock
+        os.close(fd)
+
+
+_ROUTING_FIXES = {
+    "no_api_key": "TYPESAFE_API_KEY is not set (set it to enable skill routing)",
+    "route_failed": "the routing service call failed (network or API error; retry later)",
+    "library_missing": "the skill library was not found (default ~/.tink-library/skills or "
+                       "$TINK_HOME/skills; override with --library)",
+    "library_unreadable": "the skill library could not be read (run `tink doctor`)",
+    "skillset_error": "the skillset could not be resolved (see `tink skillset list` or check the pin "
+                      "under $TINK_HOME/skillsets)",
+}
+
+_APPROVE = "review it, then run `tink library approve {name}`"
+_DELIVERY_FIXES = {
+    "unapproved": "it is not approved (" + _APPROVE + ")",
+    "digest_mismatch": "it changed since approval (" + _APPROVE + ")",
+    "symlink_refused": "a symlink was found in the skill (replace it with a real copy)",
+    "identity_mismatch": "its frontmatter name differs from its directory name",
+    "not_found": "it was not found in the skill library",
+    "tink_not_found": "the `tink` CLI is not on PATH (install it or fix PATH)",
+}
+
+
+def failure_text(reason: str, skill: str | None) -> str:
+    """Plain-language, user-facing failure line. The slug stays in receipts and --json."""
+    if skill:
+        why = _DELIVERY_FIXES.get(reason)
+        if why is None and reason.startswith("invalid_") and reason != "invalid_winner":
+            why = f"tink rejected it as invalid ({reason})"
+        head = f"Skill '{skill}' was selected but could not be delivered"
+        if why is None:
+            return f"{head} ({reason}); proceed without it.\n"
+        return f"{head}: {why.format(name=skill)}; proceed without it.\n"
+    sentence = _ROUTING_FIXES.get(reason)
+    if sentence is None:
+        return f"Skill routing failed ({reason}); proceed without a skill.\n"
+    return f"Skill routing unavailable: {sentence}; proceed without a skill.\n"
 
 
 def _mount(executor: SubprocessExecutor, name: str, cwd: Path, payload: bool) -> dict:
@@ -268,11 +303,7 @@ def run_use(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
         rec.update(tree_digest=None, chars=None)
         content = None
         code = 2
-        if rec["skill"]:
-            text = (f"Skill '{rec['skill']}' was selected but could not be delivered "
-                    f"({e.reason}); proceed without it.\n")
-        else:
-            text = f"Skill routing failed ({e.reason}); proceed without a skill.\n"
+        text = failure_text(e.reason, rec["skill"])
 
     _emit(args, rec, text, content)
 
