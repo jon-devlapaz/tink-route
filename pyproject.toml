@@ -27,7 +27,6 @@ dependencies = []
 
 [project.scripts]
 tink-route = "tink_route.cli:main"
-tink-hook = "tink_route.hook:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tink_route"]

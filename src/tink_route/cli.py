@@ -156,7 +156,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         metavar="SECONDS",
-        help="Per-API-call timeout in seconds; disables retries (used by tink-hook).",
+        help="Per-API-call timeout in seconds; disables retries.",
     )
     return parser
 
