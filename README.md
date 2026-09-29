@@ -179,6 +179,8 @@ When constrained, candidate discovery is pre-filtered against `$TINK_HOME/skills
 ### 9. Agent-Initiated Skills (`--use`)
 Stage disciplines are compiled into `AGENTS.md` by `tink use`. `tink-route --use` is the agent-initiated path for *capability gaps*: the agent runs one command, the router picks a skill from a small candidate set, `tink mount --json --payload` verifies it (approved, unchanged, no symlinks), and the skill text comes back on stdout as a normal command result. No hooks, no per-prompt routing.
 
+Skillset pins are read from the project's `.tink/skillsets/<name>-skillset.json` first (committed, same schema as home pins), then from `$TINK_HOME/skillsets`. A project pin wins over a home pin; an invalid project pin is an error, not a silent fallback.
+
 Add one line to `AGENTS.md`:
 
 ```

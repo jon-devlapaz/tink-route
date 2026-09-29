@@ -442,7 +442,7 @@ class TestPlainMessages(UseFlowCase):
         self.add_skill("alpha")
         self.check_slug(["--use", "--skillset", "nope", "t"], "skillset_error",
                         "Skill routing unavailable: the skillset could not be resolved (see `tink skillset list` or "
-                        "check the pin under $TINK_HOME/skillsets); proceed without a skill.\n")
+                        "check the pin under .tink/skillsets or $TINK_HOME/skillsets); proceed without a skill.\n")
 
     def test_unknown_slug_names_it(self) -> None:
         self.add_skill("alpha")
@@ -586,3 +586,101 @@ class TestStageFallback(UseFlowCase):
         code, _, err = self.run_cli(["--use", "--stage-only", "some task"], route_fn=self.seq_router([]))
         self.assertEqual(code, 2)
         self.assertIn("--stage-only", err)
+
+
+class TestProjectPins(UseFlowCase):
+    """Stage skillset pins live in the project (`.tink/skillsets/`) and win over home pins."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        for name in ("alpha", "beta", "gamma", "prin", "hprin"):
+            self.add_skill(name)
+        self.approve()
+        self.receipt = self.tmp / "receipt.jsonl"
+
+    def project_pin(self, filename: str, members, required=None, raw: str | None = None) -> Path:
+        d = self.proj / ".tink" / "skillsets"
+        d.mkdir(parents=True, exist_ok=True)
+        data = {"source": "x", "revision": "r", "sourceRoot": "s", "members": members}
+        if required is not None:
+            data["required"] = required
+        path = d / filename
+        path.write_text(raw if raw is not None else json.dumps(data))
+        return path
+
+    def use(self, extra, results=None):
+        results = list(results or [("routed", "alpha")])
+        calls = iter(results)
+
+        def fn(task, skills, args):
+            self.seen.append([s["name"] for s in skills])
+            status, winner = next(calls)
+            return RoutingResult(status=status, task=task, winner=winner if status == "routed" else None,
+                                 confidence=0.9, probability=0.9)
+        return self.run_cli(["--use", "--receipt", str(self.receipt), *extra, "some task"], route_fn=fn)
+
+    def test_project_pin_resolves_without_home_pin(self) -> None:
+        self.project_pin("build-skillset.json", ["alpha", "beta", "prin"], required=["prin"])
+        code, _, _ = self.use(["--stage", "build"])
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(self.seen[0]), ["alpha", "beta"])
+
+    def test_project_pin_wins_over_differing_home_pin(self) -> None:
+        self.pin("build-skillset", ["gamma", "hprin"], required=["gamma"])
+        self.project_pin("build-skillset.json", ["alpha", "beta", "prin"], required=["prin"])
+        code, _, _ = self.use(["--stage", "build"])
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(self.seen[0]), ["alpha", "beta"])
+
+    def test_bare_name_project_pin_and_canonical_request(self) -> None:
+        self.project_pin("mine.json", ["alpha", "gamma"])
+        self.use(["--skillset", "mine"])
+        self.use(["--skillset", "mine-skillset"])
+        self.assertEqual(sorted(self.seen[0]), ["alpha", "gamma"])
+        self.assertEqual(sorted(self.seen[1]), ["alpha", "gamma"])
+
+    def test_canonical_project_pin_beats_bare_project_pin(self) -> None:
+        self.project_pin("mine.json", ["gamma"])
+        self.project_pin("mine-skillset.json", ["alpha"])
+        self.use(["--skillset", "mine"])
+        self.assertEqual(self.seen[0], ["alpha"])
+
+    def test_malformed_project_pin_fails_closed(self) -> None:
+        self.pin("build-skillset", ["gamma"])
+        self.project_pin("build-skillset.json", [], raw="{not json")
+        code, out, _ = self.use(["--stage", "build"])
+        self.assertEqual(code, 2)
+        self.assertIn("could not be resolved", out)
+        self.assertEqual(self.seen, [])
+
+    def test_project_pin_without_members_fails_closed(self) -> None:
+        self.pin("build-skillset", ["gamma"])
+        self.project_pin("build-skillset.json", [], raw='{"source": "x"}')
+        code, out, _ = self.use(["--stage", "build"])
+        self.assertEqual(code, 2)
+        self.assertEqual(self.seen, [])
+
+    def test_missing_everywhere_mentions_project_location(self) -> None:
+        code, out, _ = self.use(["--skillset", "nope"])
+        self.assertEqual(code, 2)
+        self.assertIn(".tink/skillsets", out)
+        from tink_route.core.exceptions import SkillsetError
+        from tink_route.metadata import resolve_skillset
+        with self.assertRaises(SkillsetError) as cm:
+            resolve_skillset("nope", self.home, self.proj)
+        self.assertIn(".tink/skillsets", str(cm.exception))
+
+    def test_fallback_still_works_with_project_pin_scope(self) -> None:
+        self.project_pin("build-skillset.json", ["alpha", "prin"], required=["prin"])
+        code, out, _ = self.use(["--stage", "build"], [("no_skill_needed", None), ("routed", "gamma")])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.seen[0], ["alpha"])
+        self.assertNotIn("prin", self.seen[1])
+        self.assertIn("gamma", self.seen[1])
+        self.assertIn("outside the build-skillset skillset", out)
+
+    def test_stage_only_unchanged_with_project_pin(self) -> None:
+        self.project_pin("build-skillset.json", ["alpha", "prin"], required=["prin"])
+        code, _, _ = self.use(["--stage", "build", "--stage-only"], [("no_skill_needed", None)])
+        self.assertEqual(code, 1)
+        self.assertEqual(len(self.seen), 1)

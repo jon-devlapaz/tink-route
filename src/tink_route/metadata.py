@@ -157,13 +157,15 @@ def resolve_skillset(
 
     `required` is the optional list of members `tink use` compiles into AGENTS.md.
 
-    Checks:
-    1. $TINK_HOME/skillsets/<canonical>.json
-    2. $TINK_HOME/skillsets/<bare>.json
-    3. $TINK_HOME/skillsets/<canonical>/.tink-skillset.json
-    4. $TINK_HOME/skillsets/<bare>/.tink-skillset.json
-    5. <project_dir>/.agents/skills/<canonical>/.tink-skillset.json
-    6. <project_dir>/.agents/skills/<bare>/.tink-skillset.json
+    Checks, first existing file wins (a present-but-invalid file is an error, never skipped):
+    1. <project_dir>/.tink/skillsets/<canonical>.json   (committed project pin)
+    2. <project_dir>/.tink/skillsets/<bare>.json
+    3. $TINK_HOME/skillsets/<canonical>.json
+    4. $TINK_HOME/skillsets/<bare>.json
+    5. $TINK_HOME/skillsets/<canonical>/.tink-skillset.json
+    6. $TINK_HOME/skillsets/<bare>/.tink-skillset.json
+    7. <project_dir>/.agents/skills/<canonical>/.tink-skillset.json
+    8. <project_dir>/.agents/skills/<bare>/.tink-skillset.json
     """
     clean_name = skillset_name.strip()
     bare = clean_name[:-9] if clean_name.endswith("-skillset") else clean_name
@@ -175,7 +177,14 @@ def resolve_skillset(
     home = tink_home or get_default_tink_home()
     skillset_dir = home / "skillsets"
 
-    candidates = [
+    candidates: list[Path] = []
+    if project_dir is not None:
+        project_pins = project_dir / ".tink" / "skillsets"
+        candidates.extend([
+            project_pins / f"{canonical}.json",
+            project_pins / f"{bare}.json",
+        ])
+    candidates += [
         skillset_dir / f"{canonical}.json",
         skillset_dir / f"{bare}.json",
         skillset_dir / canonical / ".tink-skillset.json",
@@ -202,5 +211,7 @@ def resolve_skillset(
             return set(members), set(required)
 
     raise SkillsetError(
-        f"Skillset '{skillset_name}' not found. Searched under {skillset_dir}"
+        f"Skillset '{skillset_name}' not found. Searched: "
+        + (f"{project_dir / '.tink' / 'skillsets'}, " if project_dir is not None else "")
+        + f"{skillset_dir}"
     )
