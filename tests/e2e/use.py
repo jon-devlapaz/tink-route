@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E2E for `tink-route --use`, driving the real CLI as a subprocess.
+"""E2E for `tink-route` (delivery and `--pick`), driving the real CLI as a subprocess.
 
 Offline cases need no router. Live cases (real Jev router, <= 15 API calls) are
 skipped cleanly without TYPESAFE_API_KEY. Everything runs in an isolated
@@ -72,22 +72,31 @@ def offline() -> None:
     try:
         sb.add_skill("alpha", "alpha specialist procedure", "Body.")
         sb.approve_all()
-        for flag in ("-i", "--prune", "--multi"):
-            rc, out, err, _ = sb.cli("--use", flag, "task")
-            record(f"offline: --use {flag} is a usage error", rc == 2 and out == "" and err.count("\n") == 1,
-                   f"rc={rc}")
+        for flag in ("--use", "-i", "--prune", "--multi", "--stage", "--stage-only"):
+            rc, out, err, _ = sb.cli(flag, "task")
+            record(f"offline: removed flag {flag} is a usage error",
+                   rc == 2 and out == "" and err.count("\n") == 2, f"rc={rc}")
+        rc, out, err, _ = sb.cli("--strict", "task")
+        record("offline: --strict without --skillset is a usage error",
+               rc == 2 and out == "" and "--strict" in err, f"rc={rc}")
         rc, out, err, _ = sb.cli("--help")
-        record("offline: --help documents --use snippet",
-               rc == 0 and "tink-route --use --stage <stage>" in out and "non-zero" in out)
+        record("offline: --help documents the AGENTS.md line, no removed flags",
+               rc == 0 and 'tink-route --skillset <stage>-skillset "<what you need>"' in out
+               and "non-zero" in out and "[deprecated]" not in out and "--use" not in out)
+        before = sorted(p.relative_to(sb.root).as_posix() for p in sb.root.rglob("*"))
+        rc, out, err, _ = sb.cli("--pick", "--json", "task", key=False)
+        after = sorted(p.relative_to(sb.root).as_posix() for p in sb.root.rglob("*"))
+        record("offline: --pick without API key exits 2 and writes nothing",
+               rc == 2 and json.loads(out)["status"] == "error" and before == after, f"rc={rc}")
         rp = sb.root / "receipts.jsonl"
         env_key = os.environ.get("TYPESAFE_API_KEY")
-        rc, out, err, _ = sb.cli("--use", "--receipt", str(rp), "task", key=False)
+        rc, out, err, _ = sb.cli("--receipt", str(rp), "task", key=False)
         lines = rp.read_text().splitlines() if rp.exists() else []
         rec = json.loads(lines[0]) if lines else {}
         record("offline: missing API key fails open (exit 2, receipt error)",
                rc == 2 and "proceed without" in out and rec.get("status") == "error"
                and rec.get("reason") == "no_api_key", f"rc={rc} receipt={rec.get('reason')}")
-        rc, out, err, _ = sb.cli("--use", "--json", "task", key=False)
+        rc, out, err, _ = sb.cli("--json", "task", key=False)
         d = json.loads(out)
         record("offline: --json error shape", rc == 2 and d["status"] == "error" and d["content"] is None)
         _ = env_key
@@ -108,13 +117,20 @@ def live() -> None:
         sb.approve_all()
         rp = sb.root / "live.jsonl"
 
-        rc, out, err, secs = sb.cli("--use", "--json", "--receipt", str(rp),
+        rc, out, err, secs = sb.cli("--pick", "--json", "--receipt", str(rp),
+                                    "Explain how DNS resolution works like I'm five years old")
+        d = json.loads(out) if out.strip().startswith("{") else {}
+        record("live: --pick names eli5 and leaves no trace",
+               rc == 0 and d.get("winner") == "eli5" and not (sb.proj / ".tink").exists()
+               and not rp.exists(), f"rc={rc} winner={d.get('winner')} {secs}s")
+
+        rc, out, err, secs = sb.cli("--json", "--receipt", str(rp),
                                     "Explain how DNS resolution works like I'm five years old")
         d = json.loads(out) if out.strip().startswith("{") else {}
         record("live: clear ELI5 prompt delivers eli5", rc == 0 and d.get("skill") == "eli5"
                and d.get("delivery") == "inline" and bool(d.get("content")), f"rc={rc} skill={d.get('skill')} {secs}s")
 
-        rc, out, err, secs = sb.cli("--use", "--receipt", str(rp), "What is the weather in Paris today?")
+        rc, out, err, secs = sb.cli("--receipt", str(rp), "What is the weather in Paris today?")
         record("live: unrelated prompt exits 1", rc == 1 and out.startswith("No specialist skill applies"),
                f"rc={rc} {secs}s")
 
@@ -123,7 +139,7 @@ def live() -> None:
         (sd / "demo-skillset.json").write_text(json.dumps({
             "source": "x", "revision": "r", "sourceRoot": "s",
             "members": ["eli5", "blast-radius"], "required": ["blast-radius"]}))
-        rc, out, err, secs = sb.cli("--use", "--json", "--skillset", "demo", "--receipt", str(rp),
+        rc, out, err, secs = sb.cli("--json", "--skillset", "demo", "--receipt", str(rp),
                                     "assess what this change could break and its blast radius")
         d = json.loads(out) if out.strip().startswith("{") else {}
         record("live: required skill excluded from candidates", d.get("skill") != "blast-radius" and rc in (0, 1),

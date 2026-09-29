@@ -1,549 +1,107 @@
-"""Command line interface for tink-route."""
+"""Command line interface for tink-route: parse arguments, then hand off to flow."""
 
 import argparse
-import json
-import os
 import sys
 from pathlib import Path
 from typing import Optional
 
 from . import __version__
+from .adapters.client import DEFAULT_MODEL, DEFAULT_THRESHOLD
 from .adapters.executor import DefaultSubprocessExecutor
-from .adapters.ledger import default_ledger
-from .adapters.client import DEFAULT_MODEL, DEFAULT_THRESHOLD, JevRouterClient
-from .core.constants import (
-    FITS_THRESHOLD,
-    MULTI_DEFAULT_TOP_K,
-    STAGE_TO_SKILLSET,
-    get_default_library_path,
-    get_default_tink_home,
-)
-from .core.engine import RoutingEngine
-from .core.models import InstallOutcome, RoutingResult
-from .metadata import load_library_skills, resolve_skillset_members
-
-DEFAULT_LIBRARY_PATH = get_default_library_path()
-CONTRACT_VERSION = 1
-_DEFAULT_EXECUTOR = DefaultSubprocessExecutor()
-_DEFAULT_ENGINE = RoutingEngine(executor=_DEFAULT_EXECUTOR, ledger=default_ledger)
-
-
-def install_skill(skill_name: str, project_dir: Optional[Path] = None) -> InstallOutcome:
-    """Execute `tink skill add -- <skill_name>` and inspect installed assets."""
-    return _DEFAULT_ENGINE.install_skill(skill_name, project_dir)
-
-
-def _install_skill_locked(skill_name: str, cwd: Path) -> InstallOutcome:
-    """Install one skill. The caller is responsible for the ledger lock."""
-    return _DEFAULT_ENGINE.install_skill_locked(skill_name, cwd)
+from .core.constants import FITS_THRESHOLD, get_default_library_path
+from .flow import deliver, pick
 
 
 class _TinkRouteParser(argparse.ArgumentParser):
     """Usage errors print two short stderr lines instead of the full usage dump."""
 
     def error(self, message: str):  # type: ignore[override]
-        self.exit(
-            2,
-            f"tink-route: error: {message}\n"
-            'Try: tink-route --help  (agent-initiated skills: tink-route --use "<task>")\n',
-        )
+        self.exit(2, f"tink-route: error: {message}\nTry: tink-route --help\n")
 
 
-_LEGACY_NOTED = False
-_LEGACY_NOTE = "note: persistent install (-i/--prune) is deprecated; prefer `tink-route --use`."
+_USAGE = 'tink-route [--skillset NAME] [--strict] [--pick] [--json] [--receipt PATH] "<task>"'
 
-
-def _note_legacy() -> None:
-    """Print the deprecation note to stderr once per process."""
-    global _LEGACY_NOTED
-    if not _LEGACY_NOTED:
-        _LEGACY_NOTED = True
-        print(_LEGACY_NOTE, file=sys.stderr)
+_EPILOG = (
+    "For agents, add one line to AGENTS.md:\n"
+    "  When a task needs a specialised procedure you do not already know, run:\n"
+    '  tink-route --skillset <stage>-skillset "<what you need>" and follow the output;\n'
+    "  if it exits non-zero, continue without it.\n"
+    "\n"
+    "Exit codes: 0 delivered (--pick: routed), 1 no skill applies, 2 could not deliver or usage error."
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = _TinkRouteParser(
         prog="tink-route",
-        description="Dynamic Agent Skill Router using TypeSafe Jev.",
+        usage=_USAGE,
+        description="Route a task to one specialist skill, verify it with `tink mount`, and print it.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
-        epilog=(
-            "Agent-initiated skills (--use):\n"
-            "  Add one line to AGENTS.md:\n"
-            "    When a task needs a specialised procedure you do not already know, run:\n"
-            "    tink-route --use --stage <stage> \"<what you need>\" and follow the output;\n"
-            "    if it exits non-zero, continue without it.\n"
-            "  Exit codes: 0 skill delivered, 1 no skill applies, 2 could not deliver / usage.\n"
-            "  Skillset `required` disciplines are never offered (tink use already compiled them)."
-        ),
+        allow_abbrev=False,
+        epilog=_EPILOG,
     )
-    use_g = parser.add_argument_group("Agent-initiated skills (recommended)")
-    legacy_g = parser.add_argument_group("Legacy: persistent install (deprecated; prefer --use)")
-    other_g = parser.add_argument_group("Other options")
+    opts = parser.add_argument_group("Options")
+    adv = parser.add_argument_group("Advanced")
 
-    other_g.add_argument("-h", "--help", action="help", help="Show this help message and exit.")
-    other_g.add_argument(
-        "-v",
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
+    opts.add_argument("task", nargs="?", help="What you need done; the skill is chosen for this.")
+    opts.add_argument(
+        "--skillset", metavar="NAME",
+        help="Offer only this skillset's skills (minus its `required` ones); if none applies, "
+        "retry once over the whole library.",
     )
-    use_g.add_argument(
-        "task",
-        nargs="?",
-        help="The task description to evaluate, or 'prune', 'update', or 'version'.",
+    opts.add_argument("--strict", action="store_true", help="With --skillset: never retry over the whole library.")
+    opts.add_argument(
+        "--pick", action="store_true",
+        help="Only decide: print the chosen skill, mount nothing, write nothing.",
     )
-    use_g.add_argument(
-        "--use",
-        action="store_true",
-        help="Agent-initiated skill: route the task, verify the winner with `tink mount --payload`, "
-        "and print its instructions to stdout. Exit 0 delivered, 1 no skill applies, 2 could not deliver. "
-        "Fails open: on any problem, proceed without a skill.",
+    opts.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    opts.add_argument(
+        "--receipt", type=Path, default=None, metavar="PATH",
+        help="Append one JSON line per delivery to PATH (env: TINK_ROUTE_RECEIPT).",
     )
-    use_g.add_argument(
-        "--stage",
-        choices=[
-            "plan", "01-plan", "planning",
-            "design", "02-design",
-            "build", "03-build",
-            "test", "04-test", "testing",
-            "deploy", "05-deploy", "deployment",
-            "maintain", "06-maintain", "maintenance",
-        ],
-        help="Convenience alias: constrain candidates to the SDLC stage's skillset.",
-    )
-    use_g.add_argument(
-        "--skillset",
-        help="Constrain routing candidates to member skills of a Tink skillset pin or installed skillset.",
-    )
-    use_g.add_argument(
-        "--stage-only",
-        action="store_true",
-        help="With --use and --stage/--skillset: do not fall back to the whole library when the "
-        "skillset yields no skill.",
-    )
-    use_g.add_argument(
-        "--receipt",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help="With --use: append one JSON line per invocation to PATH (env: TINK_ROUTE_RECEIPT).",
-    )
-    use_g.add_argument(
-        "--inline-max",
-        type=int,
-        default=12000,
-        metavar="N",
-        help="With --use: skills up to N chars are printed inline, larger ones are mounted and "
-        "read by path (default: 12000).",
-    )
-    use_g.add_argument("--json", action="store_true", help="Output machine-readable JSON.")
-    use_g.add_argument(
-        "--deadline",
-        type=float,
-        default=None,
-        metavar="SECONDS",
-        help="Per-API-call timeout in seconds; disables retries.",
-    )
-    use_g.add_argument(
-        "--library",
-        type=Path,
-        default=None,
-        help="Path to Tink skill library directory (default: ~/.tink-library/skills or $TINK_HOME/skills).",
-    )
-    use_g.add_argument(
-        "--model",
-        default=DEFAULT_MODEL,
-        help=f"Pinned TypeSafe Jev model identifier (default: {DEFAULT_MODEL}).",
-    )
+    opts.add_argument("-h", "--help", action="help", help="Show this help and exit.")
+    opts.add_argument("--version", action="version", version=f"%(prog)s {__version__}",
+                      help="Show the version and exit.")
 
-    legacy_g.add_argument(
-        "-i",
-        "--install",
-        action="store_true",
-        help="[deprecated] Automatically install the winning skill into .agents/skills/ via `tink skill add`.",
-    )
-    legacy_g.add_argument(
-        "--prune",
-        action="store_true",
-        help="[deprecated] Prune ephemeral/unpinned skills from .agents/skills/.",
-    )
-    legacy_g.add_argument(
-        "--all-unpinned",
-        action="store_true",
-        help="[deprecated] In prune mode, sweep all unpinned skills (including manual installs) "
-        "rather than ledger-only.",
-    )
-    legacy_g.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="[deprecated] Preview skills eligible for pruning without removing them.",
-    )
-    legacy_g.add_argument(
-        "--ephemeral",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="[deprecated] Track installed skill in .tink/ephemeral.json for automatic pruning "
-        "(default: true).",
-    )
-    legacy_g.add_argument(
-        "--multi",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="[deprecated] Return a ranked list of qualifying skills instead of a single winner.",
-    )
-    legacy_g.add_argument(
-        "--top-k",
-        type=int,
-        default=MULTI_DEFAULT_TOP_K,
-        help=f"[deprecated] Maximum skills to return with --multi (default: {MULTI_DEFAULT_TOP_K}).",
-    )
-    legacy_g.add_argument(
-        "--check",
-        action="store_true",
-        help="[deprecated] With the 'update' task: only check for a newer release, do not install.",
-    )
-
-    other_g.add_argument(
-        "--threshold",
-        type=float,
-        default=DEFAULT_THRESHOLD,
-        help=f"Minimum confidence/probability threshold (default: {DEFAULT_THRESHOLD}).",
-    )
-    other_g.add_argument(
-        "--tri-gate",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Ask the specialised-workflow gate on the first ranking call (default: true).",
-    )
-    other_g.add_argument(
-        "--rerank",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Rerank the top Stage 2 candidates using SKILL.md excerpts and fits nouls (default: true).",
-    )
-    other_g.add_argument(
-        "--fits-threshold",
-        type=float,
-        default=FITS_THRESHOLD,
-        help=f"Minimum per-skill fits noul required to accept a reranked winner (default: {FITS_THRESHOLD}).",
-    )
+    adv.add_argument("--library", type=Path, default=None, metavar="DIR",
+                     help="Skill library (default: $TINK_HOME/skills or ~/.tink-library/skills).")
+    adv.add_argument("--model", default=DEFAULT_MODEL, metavar="NAME", help=f"Routing model (default: {DEFAULT_MODEL}).")
+    adv.add_argument("--threshold", type=float, metavar="P", default=DEFAULT_THRESHOLD,
+                     help=f"Minimum confidence to accept a skill (default: {DEFAULT_THRESHOLD}).")
+    adv.add_argument("--tri-gate", action=argparse.BooleanOptionalAction, default=True,
+                     help="Ask the specialised-workflow gate first (default: on).")
+    adv.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
+                     help="Rerank the top candidates against SKILL.md excerpts (default: on).")
+    adv.add_argument("--fits-threshold", type=float, metavar="P", default=FITS_THRESHOLD,
+                     help=f"Minimum per-skill fit to accept a reranked winner (default: {FITS_THRESHOLD}).")
+    adv.add_argument("--deadline", type=float, default=None, metavar="SECONDS",
+                     help="Per-API-call timeout; disables retries.")
+    adv.add_argument("--inline-max", type=int, default=12000, metavar="N",
+                     help="Print skills up to N chars inline; mount larger ones and give the path "
+                     "(default: 12000).")
     return parser
-
-
-def _contract_json(result: RoutingResult, skills: list[dict]) -> dict:
-    """Router JSON plus the additive activation contract. Never includes skill content."""
-    out = result.to_dict()
-    out["contract_version"] = CONTRACT_VERSION
-    if result.status in ("routed", "multi_routed") and result.winner:
-        has_scripts = False
-        for skill in skills:
-            if skill.get("name") == result.winner and skill.get("path"):
-                skill_path = Path(skill["path"])
-                has_scripts = skill_path.name == "SKILL.md" and (skill_path.parent / "scripts").is_dir()
-                break
-        out["action"] = {
-            "type": "mount_and_inject" if has_scripts else "inject",
-            "mount_command": f"tink mount {result.winner} --json --payload",
-        }
-    else:
-        out["action"] = {"type": "none", "mount_command": None}
-    return out
-
-
-def _print_install_followup(result: RoutingResult, installing: bool) -> None:
-    if result.installed and not result.tracking_error:
-        return
-    if installing and result.tracking_error:
-        print(
-            f"Installation succeeded but ownership tracking failed: {result.tracking_error}",
-            file=sys.stderr,
-        )
-    elif installing and not result.installed:
-        print(f"Installation failed: {result.install_error or ''}", file=sys.stderr)
-    elif result.winner:
-        print(f"To install run: tink skill add {result.winner}")
-
-
-def _print_route(result: RoutingResult, *, installing: bool) -> None:
-    status = result.status
-    noul = result.specialist_noul or 0.0
-    if status in ("no_skill_needed", "no_match"):
-        print(f"Status: {status} (specialist_noul: {noul:.2f}).")
-        print("Standard coding tools and models are sufficient.")
-    elif status == "no_candidates_available":
-        print(f"Status: {status} (specialist_noul: {noul:.2f}).")
-        print("No candidate skills available in the library.")
-    elif status == "multi_routed":
-        cands = result.candidates or []
-        print(f"Recommended Skills ({len(cands)}):")
-        for idx, cand in enumerate(cands, start=1):
-            print(f"  {idx}. {cand['skill']} (p={cand['probability']:.2f})")
-        if result.installed and not result.tracking_error:
-            print(f"Installed winner: {result.skill_path}")
-            print("Activation: Ready for immediate direct reading (no restart required).")
-        else:
-            _print_install_followup(result, installing)
-    elif status == "routed":
-        print(
-            f"Recommended Skill: {result.winner} "
-            f"(p={result.probability:.2f}, conf={result.confidence:.2f}, noul={noul:.2f})"
-        )
-        if result.installed and not result.tracking_error:
-            print(f"Installed: {result.skill_path}")
-            refs = result.references
-            print(f"References: {', '.join(refs) if refs else '(none)'}")
-            if result.scripts:
-                print(f"Scripts: {', '.join(result.scripts)}")
-            print("Activation: Ready for immediate direct reading (no restart required).")
-        else:
-            _print_install_followup(result, installing)
-    else:
-        top = result.top_candidate
-        p = result.probability or 0.0
-        threshold = result.threshold or 0.0
-        if result.runner_up:
-            rup_p = result.runner_up_probability or 0.0
-            margin = result.margin or 0.0
-            print(
-                f"Status: uncertain. Top candidate '{top}' (p={p:.2f}) fell below threshold {threshold:.2f}. "
-                f"Runner-up: '{result.runner_up}' (p={rup_p:.2f}, margin={margin:.2f})."
-            )
-        else:
-            print(
-                f"Status: uncertain. Top candidate '{top}' (p={p:.2f}) fell below threshold {threshold:.2f}."
-            )
 
 
 def main(argv: Optional[list[str]] = None, *, route_fn=None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
-
-    if args.library is None:
-        if DEFAULT_LIBRARY_PATH != (Path.home() / ".tink-library" / "skills"):
-            args.library = Path(DEFAULT_LIBRARY_PATH)
-        else:
-            args.library = get_default_library_path()
-    else:
-        args.library = Path(args.library)
-
-    if args.use:
-        from .use import run_use
-
-        return run_use(args, route_fn=route_fn, executor=_DEFAULT_EXECUTOR)
-
-    if args.install or args.prune or args.task == "prune":
-        _note_legacy()
-
-    # Handle prune command (either `tink-route prune` or `tink-route --prune`)
-    if args.task == "prune" or args.prune:
-        try:
-            res = _DEFAULT_ENGINE.prune(Path.cwd(), dry_run=args.dry_run, all_unpinned=args.all_unpinned)
-        except Exception as e:
-            err = {"error": str(e)}
-            if args.json:
-                print(json.dumps(err, indent=2))
-            else:
-                print(f"Prune error: {e}", file=sys.stderr)
-            return 2
-
-        if args.json:
-            print(json.dumps(res.to_dict(), indent=2))
-        else:
-            if res.dry_run:
-                if res.pruned:
-                    print(f"Eligible for pruning ({res.count}): {', '.join(res.pruned)}")
-                else:
-                    print("No transient skills eligible for pruning.")
-            else:
-                if res.pruned:
-                    print(f"Pruned {res.count} ephemeral skill(s): {', '.join(res.pruned)}")
-                    print("Clean state confirmed in .agents/skills/.")
-                else:
-                    print("No ephemeral skills to prune.")
-                for err_item in res.errors:
-                    print(f"Error removing {err_item['skill']}: {err_item['error']}", file=sys.stderr)
-        if args.dry_run:
-            return 0
-        if res.errors:
-            return 2
-        return 0
-
-    if args.task == "update":
-        from .adapters.updater import UpdateError, check_for_update, perform_update
-
-        try:
-            check = check_for_update()
-        except UpdateError as e:
-            err = {"error": str(e)}
-            if args.json:
-                print(json.dumps(err))
-            else:
-                print(f"Update error: {e}", file=sys.stderr)
-            return 2
-        if not check.newer_available or check.asset is None:
-            if args.json:
-                print(json.dumps({"status": "up_to_date", "version": check.current}))
-            else:
-                print(f"Up to date (v{check.current}).")
-            return 0
-        if args.check:
-            if args.json:
-                print(json.dumps({"status": "update_available", "current": check.current, "latest": check.latest}))
-            else:
-                print(f"Update available: v{check.current} → v{check.latest} (re-run without --check to install).")
-            return 1
-        try:
-            done = perform_update(check)
-        except UpdateError as e:
-            err = {"error": str(e)}
-            if args.json:
-                print(json.dumps(err))
-            else:
-                print(f"Update error: {e}", file=sys.stderr)
-            return 2
-        if args.json:
-            print(json.dumps({"status": "updated", "previous": check.current, "version": done.current}))
-        else:
-            print(f"Updated v{check.current} → v{done.current}.")
-        return 0
-
-    if args.task == "version":
-        if args.json:
-            print(json.dumps({"version": __version__}))
-        else:
-            print(f"tink-route {__version__}")
-        return 0
-
-    if not args.task or not args.task.strip():
-        msg = "A task description is required."
-        if args.json:
-            print(json.dumps({"error": msg}))
-        else:
-            print(f"tink-route: error: {msg} Try: tink-route \"<task>\" (see --help).", file=sys.stderr)
-        return 2
-
-    api_key = os.environ.get("TYPESAFE_API_KEY")
-    if not api_key:
-        err = {"error": "TYPESAFE_API_KEY environment variable is not set."}
-        if args.json:
-            print(json.dumps(err))
-        else:
-            print(f"Error: {err['error']}", file=sys.stderr)
-        return 2
-
-    if not args.library.is_dir():
-        err = {"error": f"Skill library not found or not a directory: {args.library}"}
-        if args.json:
-            print(json.dumps(err))
-        else:
-            print(f"Error: {err['error']}", file=sys.stderr)
-        return 2
-
-    target_skillset = args.skillset
-    if not target_skillset and args.stage:
-        target_skillset = STAGE_TO_SKILLSET.get(args.stage)
-
-    allowed_members = None
-    if target_skillset:
-        try:
-            allowed_members = resolve_skillset_members(
-                target_skillset,
-                tink_home=get_default_tink_home(),
-                project_dir=Path.cwd(),
-            )
-        except Exception as e:
-            err = {"error": f"Failed to resolve skillset '{target_skillset}': {e}"}
-            if args.json:
-                print(json.dumps(err))
-            else:
-                print(f"Error: {err['error']}", file=sys.stderr)
-            return 2
-
     try:
-        skills = load_library_skills(args.library)
-    except Exception as e:
-        err = {"error": f"Unable to load skill library: {e}"}
-        if args.json:
-            print(json.dumps(err))
-        else:
-            print(f"Error: {err['error']}", file=sys.stderr)
-        return 2
+        args = parser.parse_args(argv)
+        if not args.task or not args.task.strip():
+            parser.error('a task is required: tink-route "<what you need>".')
+        if args.strict and not args.skillset:
+            parser.error("--strict needs --skillset.")
+        if args.inline_max < 0:
+            parser.error("--inline-max must be >= 0.")
+        if args.pick and args.receipt:
+            parser.error("--pick writes nothing, so --receipt does not apply.")
+    except SystemExit as exc:  # argparse exits for usage errors, --help and --version
+        return exc.code if isinstance(exc.code, int) else 0
 
-    if allowed_members is not None:
-        skills = [s for s in skills if s["name"] in allowed_members]
-
-    if not skills:
-        msg = (
-            f"No candidate skills from skillset '{target_skillset}' were found in library: {args.library}"
-            if target_skillset
-            else f"No skills found in library directory: {args.library}"
-        )
-        err = {"error": msg}
-        if args.json:
-            print(json.dumps(err))
-        else:
-            print(f"Error: {err['error']}", file=sys.stderr)
-        return 1 if target_skillset else 2
-
-    if args.deadline is not None and not (0 < args.deadline <= 600):
-        err = {"error": "--deadline must be between 0 and 600 seconds."}
-        if args.json:
-            print(json.dumps(err))
-        else:
-            print(f"Error: {err['error']}", file=sys.stderr)
-        return 2
-
-    if args.deadline is not None:
-        client = JevRouterClient(api_key=api_key, model=args.model, timeout=args.deadline, max_retries=0)
-    else:
-        client = JevRouterClient(api_key=api_key, model=args.model)
-    engine = RoutingEngine(
-        client=client,
-        executor=_DEFAULT_EXECUTOR,
-        ledger=default_ledger,
-    )
-    try:
-        result = engine.route(
-            task=args.task,
-            skills=skills,
-            threshold=args.threshold,
-            install=args.install,
-            ephemeral=args.ephemeral,
-            project_dir=Path.cwd(),
-            tri_gate=args.tri_gate,
-            rerank=args.rerank,
-            fits_threshold=args.fits_threshold,
-            multi=args.multi,
-            top_k=args.top_k,
-            skillset=target_skillset,
-        )
-    except Exception as e:
-        err = {"error": str(e)}
-        if args.json:
-            print(json.dumps(err))
-        else:
-            print(f"Routing failure: {e}", file=sys.stderr)
-        return 2
-
-    install_failed = (
-        result.status in ("routed", "multi_routed")
-        and args.install
-        and (not result.installed or result.tracking_error)
-    )
-
-    if args.json:
-        print(json.dumps(_contract_json(result, skills), indent=2))
-    else:
-        _print_route(result, installing=args.install)
-
-    # Semantic exit code contract:
-    # 0 = routed successfully (and installed if -i was passed)
-    # 1 = unrouted (no skill needed or decision uncertain)
-    # 2 = error (installation failed, API error, missing key/library)
-    if install_failed:
-        return 2
-    return 0 if result.status in ("routed", "multi_routed") else 1
+    args.library = Path(args.library) if args.library else get_default_library_path()
+    if args.pick:
+        return pick(args, route_fn=route_fn)
+    return deliver(args, route_fn=route_fn, executor=DefaultSubprocessExecutor())
 
 
 if __name__ == "__main__":

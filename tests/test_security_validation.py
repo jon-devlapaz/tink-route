@@ -1,11 +1,9 @@
-"""Tests for input validation, path containment, YAML chomping, BOM stripping, and CLI arg safety."""
+"""Tests for input validation, YAML chomping, BOM stripping, and CLI arg safety."""
 
-import tempfile
 import unittest
-from pathlib import Path
 
 from tink_route.core.exceptions import SkillValidationError
-from tink_route.core.validation import is_valid_skill_name, validate_skill_dir_containment
+from tink_route.core.validation import is_valid_skill_name
 from tink_route.metadata import parse_skill_metadata
 
 
@@ -30,23 +28,6 @@ class TestSecurityValidationAndMetadata(unittest.TestCase):
         self.assertFalse(is_valid_skill_name("x" * 65))
         self.assertFalse(is_valid_skill_name("skïll"))  # non-ascii
         self.assertFalse(is_valid_skill_name(None))  # type: ignore[arg-type]
-
-    def test_validate_skill_dir_containment(self) -> None:
-        """Ensure skill directory is strictly contained within project .agents/skills."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_dir = Path(tmpdir)
-            base_dir = (project_dir / ".agents" / "skills").resolve()
-
-            # Valid name
-            path = validate_skill_dir_containment(project_dir, "my-skill")
-            self.assertEqual(path, base_dir / "my-skill")
-            self.assertTrue(path.is_relative_to(base_dir))
-
-            # Traversal attempt
-            for malicious in ("../escape", "../../etc", "foo/bar", "-bad-flag", ""):
-                with self.subTest(name=malicious):
-                    with self.assertRaises(SkillValidationError):
-                        validate_skill_dir_containment(project_dir, malicious)
 
     def test_meta_1_utf8_bom_stripping(self) -> None:
         """META-1: parse_skill_metadata strips leading UTF-8 BOM."""

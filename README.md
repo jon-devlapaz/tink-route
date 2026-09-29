@@ -1,226 +1,80 @@
 # tink-route
 
-> Dynamic, confidence-aware Agent Skill routing powered by [TypeSafe Jev](https://docs.typesafe.ai/) and [Tink](https://github.com/jon-devlapaz/tink).
+Routes a task to one specialist skill from your [Tink](https://github.com/jon-devlapaz/tink) library, verifies it with `tink mount`, and prints it, using [TypeSafe Jev](https://docs.typesafe.ai/) for the decision.
 
-Eliminates progressive disclosure prompt bloat by keeping skill libraries offline in `~/.tink-library/skills/` (or `$TINK_HOME/skills`) and dynamically loading only verified, load-bearing skills into `.agents/skills/` on demand.
-
----
-
-## The Problem: Progressive Disclosure Bloat
-
-The [Agent Skills standard](https://agentskills.io) injects every installed skill's name and description into the agent's base system prompt.
-- With 40+ skills, this burns **2,500–5,000+ tokens on every single turn**, even for a one-line typo fix.
-- Models suffer attention dilution, confusion between overlapping skill descriptions, and false-positive tool calls.
-
-`tink-route` replaces progressive disclosure with a **three-stage semantic gate** (all on by default; disable with `--no-tri-gate` / `--no-rerank`):
-1. **Stage 1 (Tri-Noul Gate):** three orthogonal questions — does the task act on the user's system, would it follow a documented procedure, could prose alone suffice — averaged into one specialist score. If below threshold, exits in under 300 ms with `no_skill_needed`.
-2. **Stage 2 (Choice Ranking):** Only if Stage 1 passes, Jev evaluates library candidates (batched, tournament-reduced past 24 skills) and selects the single most load-bearing skill.
-3. **Stage 3 (Shortlist Rerank):** The top 3 candidates are re-read with `SKILL.md` body excerpts plus per-skill `fits` nouls, correcting lookalike winners; if no candidate fits, the result becomes `no_match`.
-
-Pass `--multi` to return a ranked `candidates` list (`--top-k N`, default 3) instead of a single winner — every qualifying skill at or above threshold, drawn from all evaluated batches.
-
----
-
-## Benchmark & Dogfood Results
-
-Measured in isolated sandboxes (`tests/ab_eval.py`):
-
-| Metric | Progressive Disclosure (Control) | `tink-route` (Treatment) |
-| :--- | :--- | :--- |
-| **Prompt Overhead / Turn** | **4,883 tokens** (constant tax) | **0 tokens** (standard coding turns) |
-| **Routing Accuracy** | Variable (LLM hallucination risk) | **100.0% (6/6 passing)** |
-| **False Positive Rate** | High on simple queries | **0.0% (0/3 on negative controls)** |
-| **Mean Routing Latency** | N/A | **1,066 ms** |
-
----
-
-## Installation
-
-### With `pip` or `pipx`
-```bash
-pip install tink-route
-# or isolated with pipx:
-pipx install tink-route
-```
-
-### Local Development
-```bash
-git clone https://github.com/jon-devlapaz/tink-route.git
-cd tink-route
-pip install -e .
-```
-
----
-
-## Usage
-
-### 1. Set API Key
-```bash
-export TYPESAFE_API_KEY="your_api_key_here"
-```
-
-> **Recommended:** agent-initiated skills via `tink-route --use "<task>"` (see section 9). The persistent-install flow (`-i`, `--prune`, sections 3-6) is legacy and deprecated; those modes print a one-time stderr note.
-
-### 2. Inspect / Recommend (Read-Only)
-By default, `tink-route` respects Tink's separation of inspection vs. mutation authority:
+## Install
 
 ```bash
-# Standard coding query -> short-circuits at Stage 1 in ~300ms
-tink-route "Fix off-by-one bug in binary search"
-# Output:
-# Status: no_skill_needed (specialist_noul: 0.07).
-# Standard coding tools and models are sufficient.
-
-# Specialized task -> routes to top candidate
-tink-route "Create WebGL particle simulation with custom GLSL shaders"
-# Output:
-# Recommended Skill: threejs-shaders (p=0.85, conf=0.85, noul=0.93)
-# To install run: tink skill add threejs-shaders
+pipx install git+https://github.com/jon-devlapaz/tink-route.git   # not on PyPI
+export TYPESAFE_API_KEY=...  # the routing model
 ```
 
-### 3. Atomic Install (`--install` / `-i`)
-Pass `--install` (`-i`) to automatically invoke `tink skill add <winner>`. It surfaces `SKILL.md` plus any bundled reference guides or scripts in a single hop:
+Requires Python 3.11+ and the `tink` CLI on `PATH`.
 
-```bash
-tink-route -i "Audit e-commerce checkout flow to optimize conversion rate"
-# Output:
-# Recommended Skill: cro (p=1.00, conf=0.99, noul=0.92)
-# Installed: .agents/skills/cro/SKILL.md
-# References: references/experiments.md, references/form.md
-```
-
-### 4. Post-Install Activation Contract
-- When `tink-route -i` installs a skill into `.agents/skills/<name>/`, modern agent harnesses (Pi, Cursor, Claude Code, Codex) do **not require a session restart**.
-- The invoking agent immediately reads the emitted `entrypoint` path (`.agents/skills/<name>/SKILL.md`) in a single hop.
-- The `--json` payload includes an explicit `activation` contract block:
-  ```json
-  "activation": {
-    "mode": "direct_read",
-    "entrypoint": ".agents/skills/cro/SKILL.md",
-    "references": ["references/form.md", "references/experiments.md"],
-    "scripts": [],
-    "restart_required": false,
-    "instruction": "Read SKILL.md directly; mid-session use does not require session restart."
-  }
-  ```
-- `activation.mode: "direct_read"` is emitted only when installation and ephemeral ownership tracking both succeed. If installation succeeds but ledger tracking fails, the result keeps `installed: true`, reports `tracking_error`, omits activation, and exits `2`.
-
-### 5. Exit Code Contract
-Designed for clean scripting and deterministic agent branching:
-- **`0`**: Route succeeded (skill identified, and installed if `-i` was passed); or `prune` completed (including nothing to prune), or `prune --dry-run` completed cleanly.
-- **`1`**: Unrouted (`no_skill_needed`, `no_match`, `no_candidates_available`, or `uncertain` below threshold).
-- **`2`**: Operational error (missing `TYPESAFE_API_KEY`, library directory not found, failed `tink` installation, ownership ledger failure, malformed `.tink/skills.toml`, or missing `tink` binary).
-
-```bash
-# Example shell branching:
-if tink-route -i "$TASK"; then
-    echo "Specialist skill installed and ready."
-elif [ $? -eq 1 ]; then
-    echo "No specialist skill needed; using standard tools."
-else
-    echo "Operational error occurred." >&2
-fi
-```
-
-### 6. Ownership-Safe Milestone Pruning (`tink-route prune`)
-Eliminates manual cleanup bookkeeping while strictly preserving skills owned by other tools:
-
-```bash
-# Preview what would be removed (ledger-only by default):
-tink-route prune --dry-run
-# Output: Eligible for pruning (1): threejs-shaders
-
-# Sweep only skills installed and tracked by tink-route:
-tink-route prune
-# Output:
-# Pruned 1 ephemeral skill(s): threejs-shaders
-# Clean state confirmed in .agents/skills/.
-```
-
-- **Ownership Safety:** Only skills installed and recorded by `tink-route -i` are pruned by default. If a skill was already installed manually prior to routing, it is **never adopted** into `.tink/ephemeral.json` and will not be pruned.
-- **Fail-Closed Manifest Protection:** Skills declared in `.tink/skills.toml` (parsed with standard `tomllib`) and reserved skills (`manage-tink`) are **strictly protected** and never pruned in any mode. If `.tink/skills.toml` has invalid syntax, pruning fails closed with exit code `2`.
-- **Broad Sweep (`--all-unpinned`):** To sweep all unpinned skills in `.agents/skills/`, pass `tink-route prune --all-unpinned`. Warning: with no `.tink` ledger or manifest present, every installed skill looks unpinned — the CLI prints a stderr warning in that case.
-- **Pass `--no-ephemeral`:** To install a permanent skill without ephemeral tracking: `tink-route -i --no-ephemeral "<task>"`.
-
-### 7. JSON Output (`--json`)
-For programmatic invocation by AI agents:
-
-```bash
-tink-route --json "Audit this codebase architecture"
-```
-```json
-{
-  "status": "routed",
-  "task": "Audit this codebase architecture",
-  "winner": "improve-codebase-architecture",
-  "probability": 0.93,
-  "confidence": 0.91,
-  "specialist_noul": 0.97,
-  "threshold": 0.6,
-  "elapsed_ms": 1205
-}
-```
-
-### 8. Constrained Routing by Skillset or SDLC Stage (`--skillset` / `--stage`)
-Eliminates cross-phase skill bleed and bounds prompt token evaluation by constraining candidate discovery strictly to member skills of a Tink skillset pin:
-
-```bash
-# Constrain to a specific Tink skillset pin:
-tink-route --skillset testing-skillset -i "Drive and test interactive CLI keyboard inputs"
-
-# Convenience alias for AI-Native SDLC stages:
-tink-route --stage test -i "Verify browser focus and accessibility snapshots"
-```
-
-Supported stage aliases: `plan`, `design`, `build`, `test`, `deploy`, `maintain` (also `01-plan` through `06-maintain`).
-
-When constrained, candidate discovery is pre-filtered against `$TINK_HOME/skillsets/<name>[-skillset].json` (or `.tink-skillset.json`), shrinking Jev tournament batches and preventing stage leakage (e.g. asking an architecture task during Stage 4 cleanly exits with `1`).
-
-### 9. Agent-Initiated Skills (`--use`)
-Stage disciplines are compiled into `AGENTS.md` by `tink use`. `tink-route --use` is the agent-initiated path for *capability gaps*: the agent runs one command, the router picks a skill from a small candidate set, `tink mount --json --payload` verifies it (approved, unchanged, no symlinks), and the skill text comes back on stdout as a normal command result. No hooks, no per-prompt routing.
-
-Skillset pins are read from the project's `.tink/skillsets/<name>-skillset.json` first (committed, same schema as home pins), then from `$TINK_HOME/skillsets`. A project pin wins over a home pin; an invalid project pin is an error, not a silent fallback.
+## For agents
 
 Add one line to `AGENTS.md`:
 
 ```
-When a task needs a specialised procedure you do not already know, run: tink-route --use --stage <stage> "<what you need>" and follow the output; if it exits non-zero, continue without it.
+When a task needs a specialised procedure you do not already know, run: tink-route --skillset <stage>-skillset "<what you need>" and follow the output; if it exits non-zero, continue without it.
 ```
 
-```bash
-tink-route --use --stage build "assess what this change could break"
-tink-route --use --skillset testing-skillset --json "write a regression test that fails for the right reason"
-```
-
-- **Candidates:** the library (or the `--stage` / `--skillset` members) minus the pin's `required` list, since those disciplines are already in `AGENTS.md`.
-- **Stage is a hint, not a wall:** if the stage skillset yields no skill, `--use` retries once over the whole library (still excluding that stage's `required` disciplines), and the header says `outside the <skillset> skillset`. Pass `--stage-only` to disable the retry. Real example: `--stage build` finds `blast-radius`, which lives in the design skillset.
-- **Exit codes:** `0` skill delivered, `1` no specialist skill applies, `2` selected but could not be delivered (refused mount, missing `tink`, router failure) or usage error (`--use` cannot be combined with `-i`, `--prune`, `--multi`).
-- **Delivery:** skills up to `--inline-max` chars (default 12000) are printed in full under a one-line header (`# tink skill: <name>  (digest, chars, confidence)`). Larger ones are mounted with `tink mount <name>` and the output points at `.tink/.active/<name>/SKILL.md`; content is never truncated.
-- **Fail open:** any problem prints one plain-language line with the fix and exits non-zero; partial skill content is never printed after a refusal. Examples: `TYPESAFE_API_KEY is not set; set it to enable skill routing, proceed without a skill.` and ``Skill 'x' was selected but could not be delivered: it is not approved (review it, then run `tink library approve x`); proceed without it.`` The stable reason slug (`no_api_key`, `unapproved`, `digest_mismatch`, ...) stays in `--json` `reason` and in receipts.
-- **Usage errors:** any argument error prints exactly two stderr lines (`tink-route: error: ...` and a `Try:` hint) and exits 2.
-- **Legacy:** `-i/--install` and `--prune` (and their helper flags) are deprecated in favour of `--use`; they still work, print ``note: persistent install (-i/--prune) is deprecated; prefer `tink-route --use`.`` once per process on stderr, and are listed last in `--help`.
-- **`--json`:** `{contract_version, status: delivered|no_skill|error, skill, tree_digest, chars, delivery: inline|path|none, path, confidence, content, reason, scope: skillset|library}`.
-- **Receipts:** `--receipt PATH` (or `TINK_ROUTE_RECEIPT`) appends one JSON line per invocation (`ts, task, skillset, status, skill, tree_digest, chars, delivery, confidence, reason, scope`), including no-skill and error outcomes. Writes use `O_APPEND` under `flock` on the receipt file itself (no `.lock` sidecar); symlinked receipt paths are refused; a receipt failure only prints a stderr warning and never changes stdout or the exit code.
-
----
-
-## System Architecture
+## Usage
 
 ```
-[ Cold Library ]      ~/.tink-library/skills/ (46+ skills, invisible to agent prompts)
-                           │
-                           ▼
-[ Semantic Router ]   tink-route "<task>" [-i]
-                        ├── Stage 1: Tri-Noul Gate (p >= 0.60)
-                        ├── Stage 2: Jev Choice Ranking
-                        └── Stage 3: Shortlist Rerank (fits nouls) [--multi: ranked candidates]
-                           │
-                           ▼ (calls `tink skill add <winner>`)
-[ Active Working Set] .agents/skills/ (0–2 skills active at a time)
+tink-route [--skillset NAME] [--strict] [--receipt PATH] [--inline-max N] [--json] [--pick] "<task>"
 ```
 
----
+| Command | What it does |
+| :--- | :--- |
+| `tink-route "<task>"` | Route, verify the winner, print the skill (or its path). |
+| `tink-route --pick "<task>"` | Decide only. Prints `Skill: <name> (confidence 0.xx)` or `No specialist skill applies to this task.` Mounts nothing, writes nothing, no receipt. |
+| `tink-route --json ...` | Machine-readable output for either command. |
+
+Exit codes: `0` delivered (`--pick`: routed), `1` no skill applies, `2` could not deliver, or a usage error. A usage error prints exactly two stderr lines.
+
+`--pick --json` prints `{contract_version, status, task, skillset, scope, specialist_noul, winner, probability, confidence, threshold, runner_up, runner_up_probability, margin, elapsed_ms, fits, shortlist}`. `status` is `routed` or the reason nothing was chosen.
+
+Delivery `--json` prints `{contract_version, status: delivered|no_skill|error, skill, tree_digest, chars, delivery: inline|path|none, path, confidence, content, reason, scope}`.
+
+Tuning flags (`--library`, `--model`, `--threshold`, `--tri-gate/--no-tri-gate`, `--rerank/--no-rerank`, `--fits-threshold`, `--deadline`, `--inline-max`) are listed under Advanced in `tink-route --help`.
+
+## Delivery
+
+- Skills up to `--inline-max` characters (default 12000) print in full under a one-line header: `# tink skill: <name>  (digest, chars, confidence)`.
+- Larger skills are mounted with `tink mount <name>` and the output points at `.tink/.active/<name>/SKILL.md`. Content is never truncated.
+- Delivery fails open. Any problem prints one plain sentence naming the fix and exits non-zero; no skill content is printed after a refusal. The stable reason slug (`no_api_key`, `unapproved`, `digest_mismatch`, ...) is in `--json` `reason` and in receipts.
+
+## Receipts
+
+`--receipt PATH` (or `TINK_ROUTE_RECEIPT`) appends one JSON line per delivery, including no-skill and error outcomes: `ts, task, skillset, status, skill, tree_digest, chars, delivery, confidence, reason, scope`. Writes use `O_APPEND` under `flock` on the receipt file itself. Symlinked receipt paths are refused. A receipt failure prints a stderr warning and never changes stdout or the exit code.
+
+## Scoping
+
+`--skillset NAME` offers only that skillset's member skills, minus the pin's `required` list (those are already compiled into `AGENTS.md` by `tink use`).
+
+- Pins are read from `.tink/skillsets/<name>[-skillset].json` in the project first, then from `$TINK_HOME/skillsets`. A project pin wins over a home pin. A malformed pin is an error, never a silent fallback.
+- If the skillset yields no skill, routing retries once over the whole library (still minus `required`), and the header says `outside the <name> skillset`. `--strict` disables the retry and requires `--skillset`.
+- `scope` (`skillset` or `library`) in `--json` and receipts records which set produced the answer.
+
+## How routing works
+
+1. **Gate.** One question: is this a specialised workflow rather than an ordinary reply? A low score ends routing with no skill.
+2. **Rank.** Jev picks the most load-bearing candidate (batched, tournament-reduced past 24 skills) or abstains.
+3. **Rerank.** The top three are re-read with `SKILL.md` excerpts and per-skill fit scores; if none fits, no skill is chosen.
+
+## Trust model
+
+Verification is delegated to `tink mount --json --payload`: the skill must be approved (`tink library approve`), unchanged since approval (tree digest), and free of symlinks. Only verified content is printed.
+
+## Environment
+
+| Variable | Purpose |
+| :--- | :--- |
+| `TYPESAFE_API_KEY` | Routing model credential. Required. |
+| `TINK_HOME` | Library root (default `~/.tink-library`); skills live in `$TINK_HOME/skills`. |
+| `TINK_ROUTE_RECEIPT` | Default receipt path. |
 
 ## License
 
-MIT © Jonathan De La Paz
+MIT

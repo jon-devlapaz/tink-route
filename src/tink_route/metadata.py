@@ -139,15 +139,6 @@ def load_library_skills(library_dir: Path) -> list[dict[str, str]]:
     return skills
 
 
-def resolve_skillset_members(
-    skillset_name: str,
-    tink_home: Path | None = None,
-    project_dir: Path | None = None,
-) -> set[str]:
-    """Resolve member skill names from a skillset pin or directory (see resolve_skillset)."""
-    return resolve_skillset(skillset_name, tink_home, project_dir)[0]
-
-
 def resolve_skillset(
     skillset_name: str,
     tink_home: Path | None = None,

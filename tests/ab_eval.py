@@ -104,11 +104,9 @@ def build_control_prompt_block(library_dir: Path) -> str:
     return "\n".join(lines)
 
 
-def run_treatment_case(case: Dict[str, Any], install: bool = False) -> Dict[str, Any]:
+def run_treatment_case(case: Dict[str, Any]) -> Dict[str, Any]:
     """Run tink-route in the Treatment sandbox."""
-    cmd = [str(TINK_ROUTE_BIN), "--json", case["task"]]
-    if install:
-        cmd.append("--install")
+    cmd = [str(TINK_ROUTE_BIN), "--pick", "--json", case["task"]]
 
     t0 = time.time()
     res = subprocess.run(
@@ -167,7 +165,7 @@ def main():
     print("-" * 70)
 
     for case in EVAL_DATASET:
-        t_res = run_treatment_case(case, install=False)
+        t_res = run_treatment_case(case)
         treatment_total_ms += t_res.get("elapsed_ms", 0)
 
         actual = t_res.get("winner") if t_res.get("status") == "routed" else t_res.get("status")

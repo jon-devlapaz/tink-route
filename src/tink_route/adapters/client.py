@@ -16,8 +16,6 @@ from ..core.constants import (
     FITS_THRESHOLD,
     GATE_ABSTAIN,
     GATE_QUESTIONS,
-    MULTI_DEFAULT_TOP_K,
-    MULTI_MAX_TOP_K,
     NO_MATCH_SENTINEL,
     NO_SKILL_SENTINEL,
     RERANK_BODY_EXCERPT_CHARS,
@@ -458,7 +456,6 @@ class JevRouterClient:
         specialist_noul: float,
         threshold: float,
         elapsed_ms: int,
-        top_k: int | None,
     ) -> RoutingResult:
         top_cand = ranking.ranked[0][0] if ranking.ranked else None
         top_p = ranking.ranked[0][1] if ranking.ranked else 0.0
@@ -467,34 +464,6 @@ class JevRouterClient:
         margin = round(top_p - runner_up_p, 2)
         shortlist = list(ranking.shortlist) if ranking.shortlist is not None else None
         vetoed = ranking.winner in _SENTINELS or not ranking.winner or ranking.probability < threshold
-
-        if top_k is not None and not vetoed:
-            pool_p = ranking.pool.get(ranking.winner)
-            if pool_p is not None and pool_p >= threshold:
-                ordered = sorted(ranking.pool.items(), key=lambda item: item[1], reverse=True)
-                qualified = [(name, score) for name, score in ordered if score >= threshold]
-                qualified = [(ranking.winner, pool_p)] + [
-                    (name, score) for name, score in qualified if name != ranking.winner
-                ]
-                qualified = qualified[:top_k]
-                second = qualified[1] if len(qualified) > 1 else None
-                second_p = second[1] if second else 0.0
-                return RoutingResult(
-                    status="multi_routed",
-                    task=task,
-                    winner=ranking.winner,
-                    probability=ranking.probability,
-                    runner_up=second[0] if second else None,
-                    runner_up_probability=second_p if second else None,
-                    margin=round(abs(pool_p - second_p) if second else pool_p, 2),
-                    confidence=ranking.confidence,
-                    specialist_noul=specialist_noul,
-                    threshold=threshold,
-                    elapsed_ms=elapsed_ms,
-                    fits=ranking.fits,
-                    shortlist=shortlist,
-                    candidates=[{"skill": name, "probability": score} for name, score in qualified],
-                )
 
         if vetoed:
             if ranking.winner == NO_SKILL_SENTINEL:
@@ -543,15 +512,11 @@ class JevRouterClient:
         tri_gate: bool = True,
         rerank: bool = True,
         fits_threshold: float = FITS_THRESHOLD,
-        multi: bool = False,
-        top_k: int = MULTI_DEFAULT_TOP_K,
     ) -> RoutingResult:
         if not math.isfinite(threshold) or not 0 <= threshold <= 1:
             raise ValueError("Threshold must be finite and between 0 and 1")
         if not math.isfinite(fits_threshold) or not 0 <= fits_threshold <= 1:
             raise ValueError("Fits threshold must be finite and between 0 and 1")
-        if not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= MULTI_MAX_TOP_K:
-            raise ValueError(f"top_k must be an integer between 1 and {MULTI_MAX_TOP_K}")
 
         start_time = time.monotonic()
         if tri_gate:
@@ -614,5 +579,4 @@ class JevRouterClient:
             specialist_noul=specialist_noul,
             threshold=threshold,
             elapsed_ms=elapsed_ms,
-            top_k=top_k if multi else None,
         )
