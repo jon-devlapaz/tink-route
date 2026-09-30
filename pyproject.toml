@@ -30,3 +30,6 @@ tink-route = "tink_route.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tink_route"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
