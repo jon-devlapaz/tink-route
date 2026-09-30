@@ -16,13 +16,13 @@ Requires Python 3.11+ and the `tink` CLI on `PATH`.
 Add one line to `AGENTS.md`:
 
 ```
-When a task needs a specialised procedure you do not already know, run: tink-route --skillset <stage>-skillset "<what you need>" and follow the output; if it exits non-zero, continue without it.
+When a task needs a specialised procedure you do not already know, run: tink-route "<what you need>" and follow the output; if it exits non-zero, continue without it.
 ```
 
 ## Usage
 
 ```
-tink-route [--skillset NAME] [--strict] [--receipt PATH] [--inline-max N] [--json] [--pick] "<task>"
+tink-route [--skillset NAME | --anywhere] [--receipt PATH] [--inline-max N] [--json] [--pick] "<task>"
 ```
 
 | Command | What it does |
@@ -35,7 +35,7 @@ Exit codes: `0` delivered (`--pick`: routed), `1` no skill applies, `2` could no
 
 `--pick --json` prints `{contract_version, status, task, skillset, scope, specialist_noul, winner, probability, confidence, threshold, runner_up, runner_up_probability, margin, elapsed_ms, fits, shortlist}`. `status` is `routed` or the reason nothing was chosen.
 
-Delivery `--json` prints `{contract_version, status: delivered|no_skill|error, skill, tree_digest, chars, delivery: inline|path|none, path, confidence, content, reason, scope}`.
+Delivery `--json` prints `{contract_version, status: delivered|no_skill|error, skill, tree_digest, chars, delivery: inline|path|none, path, confidence, content, reason, scope, hint}`. `--pick --json` adds `hint` too when nothing was chosen.
 
 Tuning flags (`--library`, `--model`, `--threshold`, `--tri-gate/--no-tri-gate`, `--rerank/--no-rerank`, `--fits-threshold`, `--deadline`, `--inline-max`) are listed under Advanced in `tink-route --help`.
 
@@ -47,15 +47,24 @@ Tuning flags (`--library`, `--model`, `--threshold`, `--tri-gate/--no-tri-gate`,
 
 ## Receipts
 
-`--receipt PATH` (or `TINK_ROUTE_RECEIPT`) appends one JSON line per delivery, including no-skill and error outcomes: `ts, task, skillset, status, skill, tree_digest, chars, delivery, confidence, reason, scope`. Writes use `O_APPEND` under `flock` on the receipt file itself. Symlinked receipt paths are refused. A receipt failure prints a stderr warning and never changes stdout or the exit code.
+`--receipt PATH` (or `TINK_ROUTE_RECEIPT`) appends one JSON line per delivery, including no-skill and error outcomes: `ts, task, skillset, status, skill, tree_digest, chars, delivery, confidence, reason, scope, hint_skill`. Writes use `O_APPEND` under `flock` on the receipt file itself. Symlinked receipt paths are refused. A receipt failure prints a stderr warning and never changes stdout or the exit code.
 
-## Scoping
+## Scoping: the shelf
 
-`--skillset NAME` offers only that skillset's member skills, minus the pin's `required` list (those are already compiled into `AGENTS.md` by `tink use`).
+The phase decides the shelf, so the agent never says which stage it is in. `tink use <skillset>` writes a block into `./AGENTS.md`:
 
-- Pins are read from `.tink/skillsets/<name>[-skillset].json` in the project first, then from `$TINK_HOME/skillsets`. A project pin wins over a home pin. A malformed pin is an error, never a silent fallback.
-- If the skillset yields no skill, routing retries once over the whole library (still minus `required`), and the header says `outside the <name> skillset`. `--strict` disables the retry and requires `--skillset`.
-- `scope` (`skillset` or `library`) in `--json` and receipts records which set produced the answer.
+```
+<!-- tink:rules begin skillset=<name> digest=<hex> -->  ...  <!-- tink:rules end -->
+```
+
+- With no flag, the shelf is the skillset named in that block (only the root `AGENTS.md` in the current directory, exactly one well-formed block; text outside it is ignored). Candidates are its members minus the pin's `required` list (already compiled into `AGENTS.md`).
+- `--skillset NAME` overrides the block. `--anywhere` searches the whole library and ignores it; the two together are a usage error. No block and no flag also means the whole library.
+- Pins are read from `.tink/skillsets/<name>[-skillset].json` in the project first, then `$TINK_HOME/skillsets`. A malformed pin, an unresolvable skillset, or a malformed/duplicate/unbalanced block exits 2 with a plain sentence; it never falls back to the whole library.
+- The shelf is strict. If it yields nothing: `No specialist skill on the <name> shelf applies to this task; proceed without one.` (exit 1).
+- **Hint.** One more routing call over the rest of the library. If a skill there fits: `Hint: <skill> fits but is on another shelf (<a>, <b>); it was not delivered.` (or `is not on any stage shelf`). It is never mounted or printed, and exit stays 1. A failed hint call is silently omitted. No hint without a shelf.
+- `scope` (`skillset` or `library`) in `--json` and receipts records whether a shelf applied.
+
+Removed flags: `--strict` (the shelf is always strict), `--use`, `--stage`, `--stage-only`, `--multi`, `--top-k`, `-i`, `--prune`, `--check`.
 
 ## How routing works
 

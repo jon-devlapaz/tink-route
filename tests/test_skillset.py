@@ -89,9 +89,10 @@ class TestLiveStageSkillsets(unittest.TestCase):
 
 class TestCliParserSkillsetOptions(unittest.TestCase):
     def test_cli_parser_skillset_options(self):
-        args = build_parser().parse_args(["--skillset", "testing-skillset", "--strict", "my task"])
+        args = build_parser().parse_args(["--skillset", "testing-skillset", "my task"])
         self.assertEqual(args.skillset, "testing-skillset")
-        self.assertTrue(args.strict)
+        self.assertFalse(args.anywhere)
+        self.assertTrue(build_parser().parse_args(["--anywhere", "my task"]).anywhere)
 
 
 if __name__ == "__main__":
