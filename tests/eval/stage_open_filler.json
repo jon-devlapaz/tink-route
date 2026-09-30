@@ -1,0 +1,22 @@
+{
+ "filler": [
+  "Order management overview. The platform accepts orders from the storefront, validates inventory, reserves stock, computes taxes and shipping, and hands fulfilled orders to the warehouse system. Customers can view order history, download invoices and request returns within thirty days. Operators use an internal console to search orders by number, email or date range.",
+  "Invoicing. Each order produces an invoice with line items, applicable taxes, discounts and totals in the customer's currency. Invoices are numbered sequentially per legal entity and stored for seven years. Credit notes reference the original invoice and reverse the amounts they cover.",
+  "Inventory. Stock levels are tracked per warehouse and per variant. Reservations expire after fifteen minutes if payment does not complete. Low-stock thresholds trigger a daily digest to the purchasing team. Backorders are allowed for selected products only.",
+  "Customer accounts. Accounts hold contact details, saved addresses and communication preferences. Guests may check out without an account, but must supply an email address for receipts. Marketing consent is recorded with a timestamp and its source.",
+  "Reporting. Finance receives a daily revenue summary by entity and product family. Weekly cohort retention and monthly returns analysis are produced for the leadership team. Exports are available as spreadsheets with documented column definitions.",
+  "Notifications. Order confirmation, shipment and delivery messages are sent by email; SMS is optional. Templates are localized in twelve languages and reviewed by the brand team before each seasonal campaign. Delivery failures are retried with growing intervals up to a limit.",
+  "Compliance. Personal data is retained according to the published policy and deleted on verified request within thirty days. Access to the operator console is granted by role and reviewed quarterly. Audit logs record who changed what and when.",
+  "Support. Tickets are created from the help form or from replies to order emails. Agents can see the order timeline, issue refunds up to a set limit and escalate larger amounts. Response-time targets differ by customer tier."
+ ],
+ "needle_ids": [
+  "cli_tui",
+  "web_ui",
+  "typescript",
+  "open_pr",
+  "parallel_audit",
+  "blast",
+  "verif_skill",
+  "tdd"
+ ]
+}
