@@ -31,8 +31,6 @@ except ImportError:  # pragma: no cover
 CONTRACT_VERSION = 1
 NO_SKILL_MESSAGE = "No specialist skill applies to this task; proceed without one."
 PICK_NO_SKILL_MESSAGE = "No specialist skill applies to this task."
-MALFORMED_BLOCK_TEXT = ("Skill routing unavailable: AGENTS.md has a malformed tink:rules block; "
-                        "run `tink use <skillset>` to rewrite it; proceed without a skill.\n")
 RouteFn = Callable[[str, list, Any], RoutingResult]
 
 
@@ -163,36 +161,6 @@ def _mount(executor: SubprocessExecutor, name: str, cwd: Path, payload: bool) ->
     return data
 
 
-_BEGIN_RE = re.compile(r"^<!-- tink:rules begin skillset=(\S+) digest=[0-9a-fA-F]+ -->$")
-_END_LINE = "<!-- tink:rules end -->"
-
-
-def read_rules_block(cwd: Path) -> str | None:
-    """The skillset named by the generated block in <cwd>/AGENTS.md, or None if there is no block.
-
-    Only whole marker lines count; prose (and anything inside the block) cannot name a shelf.
-    Raises FlowError("rules_block_malformed") for a broken, duplicated or unbalanced block.
-    """
-    path = cwd / "AGENTS.md"
-    if not path.is_file():
-        return None
-    malformed = FlowError("rules_block_malformed", sentence=MALFORMED_BLOCK_TEXT)
-    try:
-        lines = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines()]
-    except (OSError, ValueError):
-        raise malformed from None
-    begins = [i for i, ln in enumerate(lines) if ln.startswith("<!-- tink:rules begin")]
-    ends = [i for i, ln in enumerate(lines) if ln.startswith("<!-- tink:rules end")]
-    if not begins and not ends:
-        return None
-    if len(begins) != 1 or len(ends) != 1 or begins[0] > ends[0] or lines[ends[0]] != _END_LINE:
-        raise malformed
-    m = _BEGIN_RE.match(lines[begins[0]])
-    if not m:
-        raise malformed
-    return m.group(1)
-
-
 def _pin_members(directory: Path) -> dict[str, set[str]]:
     """{pin name: members} for the readable `*.json` pins in a directory (bad pins are skipped)."""
     out: dict[str, set[str]] = {}
@@ -250,18 +218,14 @@ class Decision:
 def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | None) -> None:
     """Choose a skill for `task`, filling in `d`. Raises FlowError on any failure.
 
-    The shelf is `--skillset`, else the skillset named in ./AGENTS.md's tink:rules block, else
-    (or with `--anywhere`) the whole library. Candidates are always minus the skillset's
-    `required` skills (tink already compiled those). A shelf is strict: when it yields nothing,
-    one more call over the rest of the library may produce a hint, never a delivery.
+    The shelf is `--skillset`, else (also with `--anywhere`) the whole library; AGENTS.md is never read.
+    With a shelf, candidates are minus the skillset's `required` skills (tink already compiled those),
+    and the shelf is strict: when it yields nothing, one more call over the rest of the library may
+    produce a hint, never a delivery.
     """
     library = Path(args.library)
     if not library.is_dir():
         raise FlowError("library_missing")
-    from_block = False
-    if d.skillset is None and not args.anywhere:
-        d.skillset = read_rules_block(cwd)
-        from_block = d.skillset is not None
     d.scope = "skillset" if d.skillset else "library"
     allowed: set[str] | None = None
     required: set[str] = set()
@@ -269,11 +233,7 @@ def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | Non
         try:
             allowed, required = resolve_skillset(d.skillset, tink_home=get_default_tink_home(), project_dir=cwd)
         except Exception:
-            sentence = None
-            if from_block:
-                sentence = (f"Skill routing unavailable: AGENTS.md names skillset '{d.skillset}' but it could "
-                            f"not be resolved ({_SKILLSET_FIX}); proceed without a skill.\n")
-            raise FlowError("skillset_error", sentence=sentence) from None
+            raise FlowError("skillset_error") from None
     try:
         everything = [s for s in load_library_skills(library) if s["name"] not in required]
     except Exception:

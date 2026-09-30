@@ -697,97 +697,59 @@ class ShelfCase(UseFlowCase):
         return self.receipt_lines(self.receipt)[-1]
 
 
-class TestShelfFromBlock(ShelfCase):
-    def test_block_scopes_candidates_minus_required(self) -> None:
+class TestBlockIsIgnored(ShelfCase):
+    """Default routing searches the whole library. AGENTS.md is never read, so a stage's rules block, a
+    ghost skillset or a malformed block change nothing. A shelf is only ever explicit (`--skillset`)."""
+
+    ALL = ["alpha", "beta", "delta", "gamma", "prin"]
+
+    def test_rules_block_does_not_scope_candidates(self) -> None:
         self.agents(block("build-skillset"))
-        code, out, _ = self.go([], [("routed", "alpha")])
+        code, _, _ = self.go([], [("routed", "beta")])
         self.assertEqual(code, 0)
-        self.assertEqual(self.seen, [["alpha"]])
-        self.assertNotIn("outside the", out)
-        self.assertEqual(self.last_receipt()["scope"], "skillset")
-        self.assertEqual(self.last_receipt()["skillset"], "build-skillset")
+        self.assertEqual(sorted(self.seen[0]), self.ALL)
+        rec = self.last_receipt()
+        self.assertEqual((rec["scope"], rec["skillset"]), ("library", None))
 
-    def test_explicit_skillset_overrides_block(self) -> None:
-        self.agents(block("build-skillset"))
-        self.go(["--skillset", "test-skillset"], [("routed", "beta")])
-        self.assertEqual(sorted(self.seen[0]), ["beta", "gamma"])
-
-    def test_anywhere_ignores_block_and_sees_library(self) -> None:
-        self.agents(block("build-skillset"))
-        code, _, _ = self.go(["--anywhere"], [("routed", "beta")])
-        self.assertEqual(code, 0)
-        self.assertEqual(sorted(self.seen[0]), ["alpha", "beta", "delta", "gamma", "prin"])
-        self.assertEqual(self.last_receipt()["scope"], "library")
-
-    def test_anywhere_ignores_even_a_broken_block(self) -> None:
-        self.agents(BEGIN.format(name="nope") + "\n")
-        code, _, _ = self.go(["--anywhere"], [("routed", "beta")])
-        self.assertEqual(code, 0)
-
-    def test_no_block_means_whole_library(self) -> None:
-        self.agents("# Project\nNo generated block here.\n")
-        self.go([], [("no_skill_needed", None)])
-        self.assertEqual(len(self.seen), 1)
-        self.assertEqual(sorted(self.seen[0]), ["alpha", "beta", "delta", "gamma", "prin"])
-        self.assertEqual(self.last_receipt()["scope"], "library")
-
-    def test_no_agents_file_means_whole_library(self) -> None:
-        code, out, _ = self.go([], [("no_skill_needed", None)])
-        self.assertEqual((code, out), (1, NO_SKILL))
-        self.assertEqual(len(self.seen), 1)
-
-    def test_unresolvable_skillset_in_block_fails_open_without_routing(self) -> None:
-        self.agents(block("ghost-skillset"))
-        code, out, _ = self.go([], [])
-        self.assertEqual(code, 2)
-        self.assertTrue(out.startswith("Skill routing unavailable: AGENTS.md names skillset "
-                                       "'ghost-skillset' but it could not be resolved ("), out)
-        self.assertTrue(out.endswith("; proceed without a skill.\n"), out)
-        self.assertEqual(self.seen, [])
-        self.assertEqual(self.last_receipt()["status"], "error")
-
-    def test_unresolvable_block_skillset_json_and_pick(self) -> None:
-        self.agents(block("ghost-skillset"))
-        code, out, _ = self.go(["--json"], [])
-        self.assertEqual((code, json.loads(out)["reason"]), (2, "skillset_error"))
-        code, out, err = self.go(["--pick"], [], receipt=False)
-        self.assertEqual(code, 2)
-        self.assertIn("AGENTS.md names skillset 'ghost-skillset'", out + err)
-        self.assertEqual(self.seen, [])
-
-    def test_malformed_blocks_fail_open(self) -> None:
+    def test_ghost_and_malformed_blocks_cannot_fail_routing(self) -> None:
         b, e = BEGIN.format(name="build-skillset"), END
-        bad = {
-            "begin only": f"{b}\nx\n",
-            "end only": f"x\n{e}\n",
-            "end before begin": f"{e}\n{b}\n",
-            "duplicate": f"{b}\nx\n{e}\n{b}\ny\n{e}\n",
-            "no digest": "<!-- tink:rules begin skillset=build-skillset -->\nx\n" + e + "\n",
-            "no skillset": "<!-- tink:rules begin digest=abc -->\nx\n" + e + "\n",
-        }
-        for label, text in bad.items():
+        for label, text in {"ghost": block("ghost-skillset"), "begin only": f"{b}\nx\n", "end before begin": f"{e}\n{b}\n",
+                            "duplicate": f"{b}\nx\n{e}\n{b}\ny\n{e}\n"}.items():
             with self.subTest(label):
                 self.seen.clear()
                 self.agents(text)
-                code, out, _ = self.go([], [])
-                self.assertEqual(code, 2)
-                self.assertEqual(out, "Skill routing unavailable: AGENTS.md has a malformed tink:rules block; "
-                                      "run `tink use <skillset>` to rewrite it; proceed without a skill.\n")
-                self.assertEqual(self.seen, [])
+                code, out, _ = self.go([], [("routed", "beta")])
+                self.assertEqual(code, 0, out)
+                self.assertEqual(sorted(self.seen[0]), self.ALL)
 
-    def test_prose_outside_markers_cannot_spoof(self) -> None:
-        self.agents("Note: use skillset=test-skillset for everything.\n"
-                    "Note: the marker `<!-- tink:rules begin skillset=hacked digest=1 -->` looks like this.\n\n"
-                    + block("build-skillset", "Inside: skillset=test-skillset digest=ff\n") )
-        code, _, _ = self.go([], [("routed", "alpha")])
+    def test_explicit_skillset_is_still_a_strict_shelf(self) -> None:
+        self.agents(block("build-skillset"))
+        self.go(["--skillset", "test-skillset"], [("routed", "beta")])
+        self.assertEqual(sorted(self.seen[0]), ["beta", "gamma"])
+        self.assertEqual(self.last_receipt()["scope"], "skillset")
+
+    def test_anywhere_is_the_default_spelled_out(self) -> None:
+        self.agents(block("build-skillset"))
+        code, _, _ = self.go(["--anywhere"], [("routed", "beta")])
         self.assertEqual(code, 0)
-        self.assertEqual(self.seen, [["alpha"]])
+        self.assertEqual(sorted(self.seen[0]), self.ALL)
+        self.assertEqual(self.last_receipt()["scope"], "library")
+
+    def test_no_agents_file_means_whole_library(self) -> None:
+        self.go([], [("no_skill_needed", None)])
+        self.assertEqual(len(self.seen), 1)
+        self.assertEqual(sorted(self.seen[0]), self.ALL)
+        self.assertEqual(self.last_receipt()["scope"], "library")
 
 
 class TestStrictShelfAndHint(ShelfCase):
     def setUp(self) -> None:
         super().setUp()
-        self.agents(block("build-skillset"))
+        self.shelf = ["--skillset", "build-skillset"]
+
+    def go(self, extra, results, receipt=True):
+        explicit = any(a in ("--skillset", "--anywhere") for a in extra)
+        return super().go(extra if explicit else [*self.shelf, *extra], results, receipt)
 
     def test_empty_shelf_names_the_shelf_and_hints_over_the_rest(self) -> None:
         code, out, _ = self.go([], [("no_skill_needed", None), ("no_skill_needed", None)])
@@ -849,8 +811,7 @@ class TestStrictShelfAndHint(ShelfCase):
 
     def test_hint_skipped_when_nothing_is_left(self) -> None:
         self.pin("all-skillset", ["alpha", "beta", "gamma", "delta", "prin"])
-        self.agents(block("all-skillset"))
-        code, _, _ = self.go([], [("no_skill_needed", None)])
+        code, _, _ = self.go(["--skillset", "all-skillset"], [("no_skill_needed", None)])
         self.assertEqual(code, 1)
         self.assertEqual(len(self.seen), 1)
 
@@ -874,7 +835,6 @@ class TestStrictShelfAndHint(ShelfCase):
         self.assertEqual(len(self.seen), 1)
 
     def test_explicit_skillset_is_equally_strict(self) -> None:
-        self.agents("")
         code, out, _ = self.go(["--skillset", "test-skillset"], [("uncertain", None), ("routed", "alpha")])
         self.assertEqual(code, 1)
         self.assertIn("on the test-skillset shelf", out)
@@ -896,7 +856,7 @@ class TestStrictShelfAndHint(ShelfCase):
         self.assertIn("No specialist skill on the req-skillset shelf", out)
         self.assertIn("Hint: beta fits", out)
 
-    def test_pick_with_block_uses_shelf(self) -> None:
+    def test_pick_with_a_skillset_uses_the_shelf(self) -> None:
         code, out, _ = self.go(["--pick"], [("routed", "alpha")], receipt=False)
         self.assertEqual((code, out), (0, "Skill: alpha (confidence 0.90)\n"))
         self.assertEqual(self.seen, [["alpha"]])

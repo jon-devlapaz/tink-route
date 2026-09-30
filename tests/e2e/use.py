@@ -84,17 +84,14 @@ def offline() -> None:
         rc, out, err, _ = sb.cli("--anywhere", "--skillset", "x", "task")
         record("offline: --anywhere with --skillset is a usage error",
                rc == 2 and out == "" and "--anywhere" in err and err.count("\n") == 2, f"rc={rc}")
-        (sb.proj / "AGENTS.md").write_text("<!-- tink:rules begin skillset=demo-skillset digest=ab -->\nx\n")
-        rc, out, err, _ = sb.cli("task", key=False)
-        record("offline: unbalanced AGENTS.md block fails open (exit 2)",
-               rc == 2 and "malformed tink:rules block" in out and "proceed without a skill" in out, f"rc={rc}")
-        (sb.proj / "AGENTS.md").write_text(BLOCK)
-        rc, out, err, _ = sb.cli("task", key=False)
-        record("offline: block naming an unknown skillset fails open (exit 2)",
-               rc == 2 and "AGENTS.md names skillset 'demo-skillset'" in out, f"rc={rc}")
+        for label, text in (("unbalanced", "<!-- tink:rules begin skillset=demo-skillset digest=ab -->\nx\n"), ("unknown skillset", BLOCK)):
+            (sb.proj / "AGENTS.md").write_text(text)
+            rc, out, err, _ = sb.cli("task", key=False)
+            record(f"offline: {label} AGENTS.md block is never read (only the missing key fails)",
+                   rc == 2 and "tink:rules" not in out and "AGENTS.md names" not in out and "proceed without a skill" in out, f"rc={rc} {out[:80]}")
         (sb.proj / "AGENTS.md").unlink()
         rc, out, err, _ = sb.cli("--help")
-        record("offline: --help documents the AGENTS.md line, no removed flags",
+        record("offline: --help documents the AGENTS.md line, whole-library default, no removed flags",
                rc == 0 and 'tink-route "<what you need>" and follow the output' in out
                and "<stage>" not in out and "--strict" not in out and "--anywhere" in out
                and "non-zero" in out and "[deprecated]" not in out and "--use" not in out)
@@ -163,28 +160,27 @@ def live() -> None:
         lines = [json.loads(l) for l in rp.read_text().splitlines()] if rp.exists() else []
         record("live: receipts append one line per call", len(lines) == 3, f"lines={len(lines)}")
 
-        # Shelf from AGENTS.md: project pin `demo` = eli5 + teach; blast-radius is off-shelf.
+        # Explicit shelf (--skillset): project pin `demo` = eli5 + teach; blast-radius is off-shelf.
         pins = sb.proj / ".tink" / "skillsets"
         pins.mkdir(parents=True, exist_ok=True)
         (pins / "demo-skillset.json").write_text(json.dumps({
             "source": "x", "revision": "r", "sourceRoot": "s", "members": ["eli5", "teach"]}))
-        (sb.proj / "AGENTS.md").write_text(BLOCK)
         (sd / "demo-skillset.json").unlink()
 
-        rc, out, err, secs = sb.cli("--json", "Explain how DNS resolution works like I'm five years old")
+        rc, out, err, secs = sb.cli("--skillset", "demo-skillset", "--json", "Explain how DNS resolution works like I'm five years old")
         d = json.loads(out) if out.strip().startswith("{") else {}
-        record("live: shelf skill delivers with no flag", rc == 0 and d.get("skill") == "eli5"
+        record("live: an explicit shelf delivers its skill", rc == 0 and d.get("skill") == "eli5"
                and d.get("scope") == "skillset" and d.get("hint") is None, f"rc={rc} skill={d.get('skill')} {secs}s")
 
         before = sorted(p.relative_to(sb.proj).as_posix() for p in (sb.proj / ".tink").rglob("*"))
-        rc, out, err, secs = sb.cli("assess what this change could break and its blast radius")
+        rc, out, err, secs = sb.cli("--skillset", "demo-skillset", "assess what this change could break and its blast radius")
         after = sorted(p.relative_to(sb.proj).as_posix() for p in (sb.proj / ".tink").rglob("*"))
         record("live: off-shelf fit exits 1 with a Hint and delivers nothing",
                rc == 1 and "on the demo-skillset shelf" in out and "Hint: blast-radius fits but" in out
                and "it was not delivered" in out and "# tink skill" not in out and before == after
                and not (sb.proj / ".tink" / ".active" / "blast-radius").exists(), f"rc={rc} {secs}s\n{out}")
 
-        rc, out, err, secs = sb.cli("What is the weather in Paris today?")
+        rc, out, err, secs = sb.cli("--skillset", "demo-skillset", "What is the weather in Paris today?")
         record("live: unrelated task exits 1 with no hint",
                rc == 1 and "on the demo-skillset shelf" in out and "Hint" not in out, f"rc={rc} {secs}s")
     finally:

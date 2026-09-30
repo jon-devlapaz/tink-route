@@ -26,9 +26,8 @@ _EPILOG = (
     "  When a task needs a specialised procedure you do not already know, run:\n"
     '  tink-route "<what you need>" and follow the output; if it exits non-zero, continue without it.\n'
     "\n"
-    "The shelf is the skillset in the tink:rules block of ./AGENTS.md (written by `tink use`);\n"
-    "with no block, the whole library. If the shelf has no skill, a Hint line may name one\n"
-    "on another shelf; it is never delivered.\n"
+    "It searches the whole skill library. --skillset NAME restricts it to that skillset's shelf; if the\n"
+    "shelf has no skill, a Hint line may name one on another shelf, which is never delivered.\n"
     "\n"
     "Exit codes: 0 delivered (--pick: routed), 1 no skill applies, 2 could not deliver or usage error."
 )
@@ -50,10 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
     opts.add_argument("task", nargs="?", help="What you need done; the skill is chosen for this.")
     opts.add_argument(
         "--skillset", metavar="NAME",
-        help="Use this skillset as the shelf instead of the one in AGENTS.md (minus its `required` skills).",
+        help="Restrict the search to this skillset (minus its `required` skills), with an off-shelf hint.",
     )
     opts.add_argument("--anywhere", action="store_true",
-                      help="Search the whole library; ignore the AGENTS.md shelf.")
+                      help="Search the whole library (the default; accepted so callers can say so).")
     opts.add_argument(
         "--pick", action="store_true",
         help="Only decide: print the chosen skill, mount nothing, write nothing.",
