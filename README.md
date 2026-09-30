@@ -49,22 +49,17 @@ Tuning flags (`--library`, `--model`, `--threshold`, `--tri-gate/--no-tri-gate`,
 
 `--receipt PATH` (or `TINK_ROUTE_RECEIPT`) appends one JSON line per delivery, including no-skill and error outcomes: `ts, task, skillset, status, skill, tree_digest, chars, delivery, confidence, reason, scope, hint_skill`. Writes use `O_APPEND` under `flock` on the receipt file itself. Symlinked receipt paths are refused. A receipt failure prints a stderr warning and never changes stdout or the exit code.
 
-## Scoping: the shelf
+## Scoping: the whole library by default
 
-The phase decides the shelf, so the agent never says which stage it is in. `tink use <skillset>` writes a block into `./AGENTS.md`:
+`tink-route` searches the whole skill library. It never reads `AGENTS.md`, so a stage's `tink:rules` block neither scopes nor breaks routing. In an eval of 57 stage documents, 56% of the skills needed were not on the shelf of the stage they came up in, and the whole library was as precise as the shelf where both applied (see `tests/eval/README.md`).
 
-```
-<!-- tink:rules begin skillset=<name> digest=<hex> -->  ...  <!-- tink:rules end -->
-```
-
-- With no flag, the shelf is the skillset named in that block (only the root `AGENTS.md` in the current directory, exactly one well-formed block; text outside it is ignored). Candidates are its members minus the pin's `required` list (already compiled into `AGENTS.md`).
-- `--skillset NAME` overrides the block. `--anywhere` searches the whole library and ignores it; the two together are a usage error. No block and no flag also means the whole library.
-- Pins are read from `.tink/skillsets/<name>[-skillset].json` in the project first, then `$TINK_HOME/skillsets`. A malformed pin, an unresolvable skillset, or a malformed/duplicate/unbalanced block exits 2 with a plain sentence; it never falls back to the whole library.
-- The shelf is strict. If it yields nothing: `No specialist skill on the <name> shelf applies to this task; proceed without one.` (exit 1).
-- **Hint.** One more routing call over the rest of the library. If a skill there fits: `Hint: <skill> fits but is on another shelf (<a>, <b>); it was not delivered.` (or `is not on any stage shelf`). It is never mounted or printed, and exit stays 1. A failed hint call is silently omitted. No hint without a shelf.
+- `--skillset NAME` restricts the search to that skillset's members minus the pin's `required` list (already compiled into `AGENTS.md`). It is strict: if the shelf yields nothing, `No specialist skill on the <name> shelf applies to this task; proceed without one.` (exit 1).
+- **Hint** (only with `--skillset`). One more routing call over the rest of the library. If a skill there fits: `Hint: <skill> fits but is on another shelf (<a>, <b>); it was not delivered.` (or `is not on any stage shelf`). It is never mounted or printed, and exit stays 1. A failed hint call is silently omitted.
+- `--anywhere` is the default spelled out; it cannot be combined with `--skillset`.
+- Pins are read from `.tink/skillsets/<name>[-skillset].json` in the project first, then `$TINK_HOME/skillsets`. A malformed pin or an unresolvable skillset exits 2 with a plain sentence; it never falls back to the whole library.
 - `scope` (`skillset` or `library`) in `--json` and receipts records whether a shelf applied.
 
-Removed flags: `--strict` (the shelf is always strict), `--use`, `--stage`, `--stage-only`, `--multi`, `--top-k`, `-i`, `--prune`, `--check`.
+Removed: reading the `tink:rules` block of `AGENTS.md` (the shelf is now only ever explicit), and flags `--strict` (a shelf is always strict), `--use`, `--stage`, `--stage-only`, `--multi`, `--top-k`, `-i`, `--prune`, `--check`.
 
 ## How routing works
 
