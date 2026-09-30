@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,15 +31,18 @@ except ImportError:  # pragma: no cover
 CONTRACT_VERSION = 1
 NO_SKILL_MESSAGE = "No specialist skill applies to this task; proceed without one."
 PICK_NO_SKILL_MESSAGE = "No specialist skill applies to this task."
+MALFORMED_BLOCK_TEXT = ("Skill routing unavailable: AGENTS.md has a malformed tink:rules block; "
+                        "run `tink use <skillset>` to rewrite it; proceed without a skill.\n")
 RouteFn = Callable[[str, list, Any], RoutingResult]
 
 
 class FlowError(Exception):
     """A failure that must fail open. `reason` is a stable slug."""
 
-    def __init__(self, reason: str, message: str = ""):
+    def __init__(self, reason: str, message: str = "", sentence: str | None = None):
         super().__init__(message or reason)
         self.reason = reason
+        self.sentence = sentence  # a complete user-facing line, when the generic one would mislead
 
 
 def _default_route(task: str, skills: list, args: Any) -> RoutingResult:
@@ -88,14 +92,14 @@ def _write_receipt(path: Path, record: dict) -> None:
         os.close(fd)
 
 
+_SKILLSET_FIX = "see `tink skillset list` or check the pin under .tink/skillsets or $TINK_HOME/skillsets"
 _ROUTING_FIXES = {
     "no_api_key": "TYPESAFE_API_KEY is not set (set it to enable skill routing)",
     "route_failed": "the routing service call failed (network or API error; retry later)",
     "library_missing": "the skill library was not found (default ~/.tink-library/skills or "
                        "$TINK_HOME/skills; override with --library)",
     "library_unreadable": "the skill library could not be read (run `tink doctor`)",
-    "skillset_error": "the skillset could not be resolved (see `tink skillset list` or check the pin "
-                      "under .tink/skillsets or $TINK_HOME/skillsets)",
+    "skillset_error": "the skillset could not be resolved (" + _SKILLSET_FIX + ")",
 }
 
 _APPROVE = "review it, then run `tink library approve {name}`"
@@ -159,8 +163,59 @@ def _mount(executor: SubprocessExecutor, name: str, cwd: Path, payload: bool) ->
     return data
 
 
+_BEGIN_RE = re.compile(r"^<!-- tink:rules begin skillset=(\S+) digest=[0-9a-fA-F]+ -->$")
+_END_LINE = "<!-- tink:rules end -->"
+
+
+def read_rules_block(cwd: Path) -> str | None:
+    """The skillset named by the generated block in <cwd>/AGENTS.md, or None if there is no block.
+
+    Only whole marker lines count; prose (and anything inside the block) cannot name a shelf.
+    Raises FlowError("rules_block_malformed") for a broken, duplicated or unbalanced block.
+    """
+    path = cwd / "AGENTS.md"
+    if not path.is_file():
+        return None
+    malformed = FlowError("rules_block_malformed", sentence=MALFORMED_BLOCK_TEXT)
+    try:
+        lines = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines()]
+    except (OSError, ValueError):
+        raise malformed from None
+    begins = [i for i, ln in enumerate(lines) if ln.startswith("<!-- tink:rules begin")]
+    ends = [i for i, ln in enumerate(lines) if ln.startswith("<!-- tink:rules end")]
+    if not begins and not ends:
+        return None
+    if len(begins) != 1 or len(ends) != 1 or begins[0] > ends[0] or lines[ends[0]] != _END_LINE:
+        raise malformed
+    m = _BEGIN_RE.match(lines[begins[0]])
+    if not m:
+        raise malformed
+    return m.group(1)
+
+
+def _pin_members(directory: Path) -> dict[str, set[str]]:
+    """{pin name: members} for the readable `*.json` pins in a directory (bad pins are skipped)."""
+    out: dict[str, set[str]] = {}
+    for f in sorted(directory.glob("*.json")) if directory.is_dir() else []:
+        try:
+            members = json.loads(f.read_text(encoding="utf-8")).get("members")
+        except Exception:
+            continue
+        if isinstance(members, list):
+            out[f.stem] = {m for m in members if isinstance(m, str)}
+    return out
+
+
+def shelves_of(skill: str, cwd: Path) -> list[str]:
+    """Pins whose members contain `skill`: project pins first, then home pins, sorted, at most 2."""
+    project = _pin_members(cwd / ".tink" / "skillsets")
+    home = {k: v for k, v in _pin_members(get_default_tink_home() / "skillsets").items() if k not in project}
+    names = [n for pins in (project, home) for n in sorted(pins) if skill in pins[n]]
+    return names[:2]
+
+
 class Decision:
-    """Where routing stands: the candidates offered last, the scope they came from, the result."""
+    """Where routing stands: the candidates offered, the shelf, the result, and any off-shelf hint."""
 
     def __init__(self, skillset: str | None):
         self.skillset = skillset
@@ -168,29 +223,57 @@ class Decision:
         self.skills: list = []
         self.result: RoutingResult | None = None
         self.skill: str | None = None  # the winner, once it has been validated
+        self.hint: str | None = None  # a skill on another shelf that fits; never delivered
+        self.hint_shelves: list[str] = []
 
     @property
     def routed(self) -> bool:
         return self.result is not None and self.result.status == "routed" and bool(self.result.winner)
 
+    def hint_dict(self) -> dict | None:
+        return {"skill": self.hint, "shelves": self.hint_shelves} if self.hint else None
+
+    def no_skill_text(self, *, pick: bool = False) -> str:
+        if pick:
+            text = PICK_NO_SKILL_MESSAGE + "\n"
+        elif self.scope == "skillset":
+            text = f"No specialist skill on the {self.skillset} shelf applies to this task; proceed without one.\n"
+        else:
+            text = NO_SKILL_MESSAGE + "\n"
+        if self.hint:
+            where = (f"is on another shelf ({', '.join(self.hint_shelves)})" if self.hint_shelves
+                     else "is not on any stage shelf")
+            text += f"Hint: {self.hint} fits but {where}; it was not delivered.\n"
+        return text
+
 
 def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | None) -> None:
     """Choose a skill for `task`, filling in `d`. Raises FlowError on any failure.
 
-    Candidates are the library, narrowed to `--skillset` when given, always minus the
-    skillset's `required` skills (tink already compiled those). If the skillset yields
-    no skill, retry once over the whole library unless `--strict`.
+    The shelf is `--skillset`, else the skillset named in ./AGENTS.md's tink:rules block, else
+    (or with `--anywhere`) the whole library. Candidates are always minus the skillset's
+    `required` skills (tink already compiled those). A shelf is strict: when it yields nothing,
+    one more call over the rest of the library may produce a hint, never a delivery.
     """
     library = Path(args.library)
     if not library.is_dir():
         raise FlowError("library_missing")
+    from_block = False
+    if d.skillset is None and not args.anywhere:
+        d.skillset = read_rules_block(cwd)
+        from_block = d.skillset is not None
+    d.scope = "skillset" if d.skillset else "library"
     allowed: set[str] | None = None
     required: set[str] = set()
     if d.skillset:
         try:
             allowed, required = resolve_skillset(d.skillset, tink_home=get_default_tink_home(), project_dir=cwd)
         except Exception:
-            raise FlowError("skillset_error") from None
+            sentence = None
+            if from_block:
+                sentence = (f"Skill routing unavailable: AGENTS.md names skillset '{d.skillset}' but it could "
+                            f"not be resolved ({_SKILLSET_FIX}); proceed without a skill.\n")
+            raise FlowError("skillset_error", sentence=sentence) from None
     try:
         everything = [s for s in load_library_skills(library) if s["name"] not in required]
     except Exception:
@@ -208,24 +291,37 @@ def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | Non
         except Exception:
             raise FlowError("route_failed") from None
 
-    attempt(everything if allowed is None else [s for s in everything if s["name"] in allowed])
-    if not d.routed and allowed is not None and not args.strict:
-        d.scope = "library"
-        attempt(everything)
+    shelf = everything if allowed is None else [s for s in everything if s["name"] in allowed]
+    attempt(shelf)
 
     if d.routed:
         assert d.result is not None and d.result.winner is not None
         d.skill = d.result.winner
         if not is_valid_skill_name(d.skill) or d.skill not in {s["name"] for s in d.skills}:
             raise FlowError("invalid_winner")
+    elif allowed is not None:
+        on_shelf = {s["name"] for s in shelf}
+        rest = [s for s in everything if s["name"] not in on_shelf]
+        if rest:
+            try:
+                res = (route_fn or _default_route)(task, rest, args)
+            except Exception:
+                return  # the hint is a courtesy; the primary answer stands
+            name = res.winner if res.status == "routed" else None
+            if name and is_valid_skill_name(name) and name in {s["name"] for s in rest}:
+                d.hint = name
+                d.hint_shelves = shelves_of(name, cwd)
 
 
 def pick_json(d: Decision, task: str) -> dict:
     """The routing decision as JSON. Never includes skill content."""
     assert d.result is not None
     out = d.result.to_dict()
-    return {"contract_version": CONTRACT_VERSION, "status": out.pop("status"), "task": out.pop("task"),
-            "skillset": d.skillset, "scope": d.scope, **out}
+    res = {"contract_version": CONTRACT_VERSION, "status": out.pop("status"), "task": out.pop("task"),
+           "skillset": d.skillset, "scope": d.scope, **out}
+    if not d.routed:
+        res["hint"] = d.hint_dict()
+    return res
 
 
 def pick(args: Any, *, route_fn: RouteFn | None = None) -> int:
@@ -238,7 +334,7 @@ def pick(args: Any, *, route_fn: RouteFn | None = None) -> int:
         if args.json:
             print(json.dumps({"contract_version": CONTRACT_VERSION, "status": "error", "reason": e.reason}, indent=2))
         else:
-            sys.stderr.write(failure_text(e.reason, d.skill))
+            sys.stderr.write(e.sentence or failure_text(e.reason, d.skill))
         return 2
     if args.json:
         print(json.dumps(pick_json(d, task), indent=2))
@@ -246,7 +342,7 @@ def pick(args: Any, *, route_fn: RouteFn | None = None) -> int:
         conf = d.result.confidence if d.result.confidence is not None else 0.0  # type: ignore[union-attr]
         print(f"Skill: {d.skill} (confidence {conf:.2f})")
     else:
-        print(PICK_NO_SKILL_MESSAGE)
+        sys.stdout.write(d.no_skill_text(pick=True))
     return 0 if d.routed else 1
 
 
@@ -264,6 +360,7 @@ def _emit(args: Any, rec: dict, text: str, content: str | None) -> None:
             "content": content if rec["delivery"] == "inline" else None,
             "reason": rec["reason"],
             "scope": rec.get("scope"),
+            "hint": rec.get("hint"),
         }, indent=2))
     else:
         sys.stdout.write(text)
@@ -277,7 +374,7 @@ def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
     rec: dict[str, Any] = {
         "task": args.task, "skillset": d.skillset, "status": "error", "skill": None,
         "tree_digest": None, "chars": None, "delivery": "none", "confidence": None,
-        "reason": None, "path": None, "scope": d.scope,
+        "reason": None, "path": None, "scope": d.scope, "hint": None,
     }
     content: str | None = None
     text = ""
@@ -289,13 +386,15 @@ def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
             decide(d, task, args, cwd, route_fn)
         finally:
             rec["scope"] = d.scope
+            rec["skillset"] = d.skillset
             rec["skill"] = d.skill
             if d.result is not None:
                 rec["confidence"] = d.result.confidence
                 rec["reason"] = d.result.status
         if not d.routed:
             rec["status"] = "no_skill"
-            text = NO_SKILL_MESSAGE + "\n"
+            rec["hint"] = d.hint_dict()
+            text = d.no_skill_text()
             code = 1
         else:
             assert d.result is not None and d.skill is not None
@@ -306,9 +405,8 @@ def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
             chars = chars if isinstance(chars, int) and not isinstance(chars, bool) else len(payload)
             rec.update(tree_digest=data["tree_digest"], chars=chars)
             conf = d.result.confidence if d.result.confidence is not None else 0.0
-            outside = f", outside the {d.skillset} skillset" if d.skillset and d.scope == "library" else ""
             header = (f"# tink skill: {name}  (digest {data['tree_digest']}, {chars} chars, "
-                      f"confidence {conf:.2f}{outside})\n")
+                      f"confidence {conf:.2f})\n")
             base = f".tink/.active/{name}"
             if chars <= args.inline_max:
                 extra = ""
@@ -335,7 +433,7 @@ def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
         rec.update(tree_digest=None, chars=None)
         content = None
         code = 2
-        text = failure_text(e.reason, rec["skill"])
+        text = e.sentence or failure_text(e.reason, rec["skill"])
 
     _emit(args, rec, text, content)
 
@@ -346,7 +444,7 @@ def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
             "task": rec["task"], "skillset": rec["skillset"], "status": rec["status"],
             "skill": rec["skill"], "tree_digest": rec["tree_digest"], "chars": rec["chars"],
             "delivery": rec["delivery"], "confidence": rec["confidence"], "reason": rec["reason"],
-            "scope": rec["scope"],
+            "scope": rec["scope"], "hint_skill": (rec["hint"] or {}).get("skill"),
         }
         try:
             _write_receipt(Path(receipt), record)

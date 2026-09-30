@@ -19,13 +19,16 @@ class _TinkRouteParser(argparse.ArgumentParser):
         self.exit(2, f"tink-route: error: {message}\nTry: tink-route --help\n")
 
 
-_USAGE = 'tink-route [--skillset NAME] [--strict] [--pick] [--json] [--receipt PATH] "<task>"'
+_USAGE = 'tink-route [--skillset NAME | --anywhere] [--pick] [--json] [--receipt PATH] "<task>"'
 
 _EPILOG = (
     "For agents, add one line to AGENTS.md:\n"
     "  When a task needs a specialised procedure you do not already know, run:\n"
-    '  tink-route --skillset <stage>-skillset "<what you need>" and follow the output;\n'
-    "  if it exits non-zero, continue without it.\n"
+    '  tink-route "<what you need>" and follow the output; if it exits non-zero, continue without it.\n'
+    "\n"
+    "The shelf is the skillset in the tink:rules block of ./AGENTS.md (written by `tink use`);\n"
+    "with no block, the whole library. If the shelf has no skill, a Hint line may name one\n"
+    "on another shelf; it is never delivered.\n"
     "\n"
     "Exit codes: 0 delivered (--pick: routed), 1 no skill applies, 2 could not deliver or usage error."
 )
@@ -47,10 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
     opts.add_argument("task", nargs="?", help="What you need done; the skill is chosen for this.")
     opts.add_argument(
         "--skillset", metavar="NAME",
-        help="Offer only this skillset's skills (minus its `required` ones); if none applies, "
-        "retry once over the whole library.",
+        help="Use this skillset as the shelf instead of the one in AGENTS.md (minus its `required` skills).",
     )
-    opts.add_argument("--strict", action="store_true", help="With --skillset: never retry over the whole library.")
+    opts.add_argument("--anywhere", action="store_true",
+                      help="Search the whole library; ignore the AGENTS.md shelf.")
     opts.add_argument(
         "--pick", action="store_true",
         help="Only decide: print the chosen skill, mount nothing, write nothing.",
@@ -89,8 +92,8 @@ def main(argv: Optional[list[str]] = None, *, route_fn=None) -> int:
         args = parser.parse_args(argv)
         if not args.task or not args.task.strip():
             parser.error('a task is required: tink-route "<what you need>".')
-        if args.strict and not args.skillset:
-            parser.error("--strict needs --skillset.")
+        if args.anywhere and args.skillset:
+            parser.error("--anywhere and --skillset cannot be used together.")
         if args.inline_max < 0:
             parser.error("--inline-max must be >= 0.")
         if args.pick and args.receipt:

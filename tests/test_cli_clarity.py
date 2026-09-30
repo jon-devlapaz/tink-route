@@ -13,10 +13,11 @@ from tink_route.adapters import client as client_mod
 REPO = Path(__file__).resolve().parent.parent
 TRY = "Try: tink-route --help"
 REMOVED = ["--use", "--stage", "--stage-only", "-i", "--install", "--prune", "--all-unpinned",
-           "--dry-run", "--ephemeral", "--no-ephemeral", "--multi", "--no-multi", "--top-k", "--check"]
+           "--dry-run", "--ephemeral", "--no-ephemeral", "--multi", "--no-multi", "--top-k", "--check",
+           "--strict"]
 ADVANCED = ["--library", "--model", "--threshold", "--tri-gate", "--no-tri-gate", "--rerank",
             "--no-rerank", "--fits-threshold", "--deadline", "--inline-max"]
-MAIN = ["--skillset", "--strict", "--receipt", "--json", "--pick", "--version"]
+MAIN = ["--skillset", "--anywhere", "--receipt", "--json", "--pick", "--version"]
 
 
 def run(argv):
@@ -88,7 +89,10 @@ class TestHelp(unittest.TestCase):
 
     def test_epilog_has_agent_line_and_exit_codes(self):
         h = self.help()
-        self.assertIn('tink-route --skillset <stage>-skillset "<what you need>"', h)
+        self.assertIn('tink-route "<what you need>" and follow the output', h)
+        self.assertNotIn("<stage>", h)
+        self.assertIn("tink:rules", h)
+        self.assertIn("--anywhere", h)
         self.assertIn("if it exits non-zero, continue without it", h)
         self.assertIn("Exit codes: 0 delivered", h)
 
@@ -128,7 +132,7 @@ class TestVersioning(unittest.TestCase):
     def test_versions_agree(self):
         m = re.search(r'^version\s*=\s*"([^"]+)"', (REPO / "pyproject.toml").read_text(), re.M)
         self.assertEqual(m.group(1), tink_route.__version__)
-        self.assertEqual(tink_route.__version__, "0.8.0")
+        self.assertEqual(tink_route.__version__, "0.9.0")
 
 
 if __name__ == "__main__":
