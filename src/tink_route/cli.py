@@ -67,7 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Show the version and exit.")
 
     adv.add_argument("--library", type=Path, default=None, metavar="DIR",
-                     help="Skill library (default: $TINK_HOME/skills or ~/.tink-library/skills).")
+                     help="Skill library (default: $TINK_HOME/skills or ~/.tink-library/skills). "
+                          "A different library requires --pick; set TINK_HOME to change the delivery library.")
     adv.add_argument("--model", default=DEFAULT_MODEL, metavar="NAME", help=f"Routing model (default: {DEFAULT_MODEL}).")
     adv.add_argument("--threshold", type=float, metavar="P", default=DEFAULT_THRESHOLD,
                      help=f"Minimum confidence to accept a skill (default: {DEFAULT_THRESHOLD}).")

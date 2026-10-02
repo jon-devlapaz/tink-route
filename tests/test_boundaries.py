@@ -72,5 +72,5 @@ class TestPublicationBoundaries(unittest.TestCase):
                 load_library_skills(root)
             output = io.StringIO()
             with patch.dict(os.environ, TYPESAFE_API_KEY='fixture'), patch('sys.stdout', output):
-                self.assertEqual(main(['--json', '--library', str(root), 'test']), 2)
+                self.assertEqual(main(['--pick', '--json', '--library', str(root), 'test']), 2)
             self.assertEqual(json.loads(output.getvalue())['reason'], 'library_unreadable')

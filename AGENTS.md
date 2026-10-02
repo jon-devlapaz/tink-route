@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository follows the [AI-Native SDLC Playbook](/Users/jondev/dev/active/ai-native-sdlc).
+This repository follows the [AI-Native SDLC Playbook](https://github.com/jon-devlapaz/tink-sdlc).
 
 ## Development Guidelines
 
@@ -19,5 +19,5 @@ A repository is `git-golden` when all of the following are true:
 
 - It is checked out on `main` with a clean working tree.
 - Local `main` is even with `origin/main`.
-- GitHub has no open pull requests and no open issues.
+- Open issues and pull requests are tracked separately; they do not make the checkout unclean.
 - The latest `CI` run on `main` succeeded.

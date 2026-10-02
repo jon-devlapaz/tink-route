@@ -49,6 +49,10 @@ Tuning flags (`--library`, `--model`, `--threshold`, `--tri-gate/--no-tri-gate`,
 
 `--receipt PATH` (or `TINK_ROUTE_RECEIPT`) appends one JSON line per delivery, including no-skill and error outcomes: `ts, task, skillset, status, skill, tree_digest, chars, delivery, confidence, reason, scope, hint_skill`. Writes use `O_APPEND` under `flock` on the receipt file itself. Symlinked receipt paths are refused. A receipt failure prints a stderr warning and never changes stdout or the exit code.
 
+`--library` can inspect another directory with `--pick`. Delivery requires the same
+library that Tink uses; set `TINK_HOME` to change it for both tools. A mismatched
+delivery library exits 2 before routing or mounting (`library_mismatch` in JSON).
+
 ## Scoping: the whole library by default
 
 `tink-route` searches the whole skill library. It never reads `AGENTS.md`, so a stage's `tink:rules` block neither scopes nor breaks routing. In an eval of 57 stage documents, 56% of the skills needed were not on the shelf of the stage they came up in, and the whole library was as precise as the shelf where both applied (see `tests/eval/README.md`).
