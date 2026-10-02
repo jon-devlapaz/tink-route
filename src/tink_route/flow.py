@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 from .adapters.client import JevRouterClient
 from .adapters.executor import SubprocessExecutor
-from .core.constants import get_default_tink_home
+from .core.constants import get_default_library_path, get_default_tink_home
 from .core.models import RoutingResult
 from .core.validation import is_valid_skill_name
 from .metadata import load_library_skills, resolve_skillset
@@ -96,6 +96,8 @@ _ROUTING_FIXES = {
     "route_failed": "the routing service call failed (network or API error; retry later)",
     "library_missing": "the skill library was not found (default ~/.tink-library/skills or "
                        "$TINK_HOME/skills; override with --library)",
+    "library_mismatch": "--library differs from Tink's delivery library (use --pick to inspect it, "
+                        "or set TINK_HOME to its parent for both routing and delivery)",
     "library_unreadable": "the skill library could not be read (run `tink doctor`)",
     "skillset_error": "the skillset could not be resolved (" + _SKILLSET_FIX + ")",
 }
@@ -226,6 +228,8 @@ def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | Non
     library = Path(args.library)
     if not library.is_dir():
         raise FlowError("library_missing")
+    if not args.pick and library.resolve() != get_default_library_path().resolve():
+        raise FlowError("library_mismatch")
     d.scope = "skillset" if d.skillset else "library"
     allowed: set[str] | None = None
     required: set[str] = set()
