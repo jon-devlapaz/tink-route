@@ -103,6 +103,8 @@ _ROUTING_FIXES = {
     "approvals_unreadable": "Tink's approvals file ($TINK_HOME/approvals.json) is missing or unreadable "
                             "(run `tink doctor`)",
     "no_approved_skills": "no skills are approved yet (review one, then run `tink library approve <name>`)",
+    "approvals_library_mismatch": "--approved-only reads Tink's approvals, which cover only Tink's own library "
+                                  "(drop --library or --approved-only)",
 }
 
 _APPROVE = "review it, then run `tink library approve {name}`"
@@ -221,7 +223,8 @@ class Decision:
         return text
 
 
-def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | None) -> None:
+def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | None,
+           exclude: frozenset[str] | set[str] = frozenset()) -> None:
     """Choose a skill for `task`, filling in `d`. Raises FlowError on any failure.
 
     The shelf is `--skillset`, else (also with `--anywhere`) the whole library; AGENTS.md is never read.
@@ -247,6 +250,8 @@ def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | Non
     except Exception:
         raise FlowError("library_unreadable") from None
     if d.approved_only:
+        if library.resolve() != get_default_library_path().resolve():
+            raise FlowError("approvals_library_mismatch")
         try:
             approved = load_approved_skills(get_default_tink_home())
         except Exception:
@@ -254,6 +259,8 @@ def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | Non
         if not approved:
             raise FlowError("no_approved_skills")
         everything = [s for s in everything if s["name"] in approved]
+    if exclude:
+        everything = [s for s in everything if s["name"] not in exclude]
 
     def attempt(candidates: list) -> None:
         d.skills = candidates
@@ -338,6 +345,7 @@ def _emit(args: Any, rec: dict, text: str, content: str | None) -> None:
             "reason": rec["reason"],
             "scope": rec.get("scope"),
             "approved_only": args.approved_only,
+            "skipped": rec["skipped"],
             "hint": rec.get("hint"),
         }, indent=2))
     else:
@@ -352,24 +360,46 @@ def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
     rec: dict[str, Any] = {
         "task": args.task, "skillset": d.skillset, "status": "error", "skill": None,
         "tree_digest": None, "chars": None, "delivery": "none", "confidence": None, "probability": None,
-        "reason": None, "path": None, "scope": d.scope, "hint": None,
+        "reason": None, "path": None, "scope": d.scope, "hint": None, "skipped": [],
     }
     content: str | None = None
     text = ""
     code = 2
     cwd = Path.cwd()
 
+    def settle(dec: Decision) -> None:
+        rec["scope"] = dec.scope
+        rec["skillset"] = dec.skillset
+        rec["skill"] = dec.skill
+        if dec.result is not None:
+            rec["confidence"] = dec.result.confidence
+            rec["probability"] = dec.result.probability
+            rec["reason"] = dec.result.status
+
     try:
         try:
             decide(d, task, args, cwd, route_fn)
         finally:
-            rec["scope"] = d.scope
-            rec["skillset"] = d.skillset
-            rec["skill"] = d.skill
-            if d.result is not None:
-                rec["confidence"] = d.result.confidence
-                rec["probability"] = d.result.probability
-                rec["reason"] = d.result.status
+            settle(d)
+        data: dict = {}
+        if d.routed:
+            try:
+                data = _mount(executor, d.skill, cwd, payload=True)  # type: ignore[arg-type]
+            except FlowError as e:
+                # Approved-only routing checks names; tink checks digests. If tink refuses the winner, route once more
+                # without it so a changed or revoked skill cannot hide an approved runner-up.
+                if not (d.approved_only and e.reason in ("digest_mismatch", "unapproved")):
+                    raise
+                rec["skipped"].append({"skill": d.skill, "reason": e.reason})
+                sys.stderr.write(f"tink-route: warning: skipped {d.skill} ({e.reason}); review it, then run "
+                                 f"`tink library approve {d.skill}`\n")
+                d = Decision(args.skillset, True)
+                try:
+                    decide(d, task, args, cwd, route_fn, exclude={s["skill"] for s in rec["skipped"]})
+                finally:
+                    settle(d)
+                if d.routed:
+                    data = _mount(executor, d.skill, cwd, payload=True)  # type: ignore[arg-type]
         if not d.routed:
             rec["status"] = "no_skill"
             rec["hint"] = d.hint_dict()
@@ -378,7 +408,6 @@ def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
         else:
             assert d.result is not None and d.skill is not None
             name = d.skill
-            data = _mount(executor, name, cwd, payload=True)
             payload = data["payload"]["content"]
             chars = data["payload"].get("chars")
             chars = chars if isinstance(chars, int) and not isinstance(chars, bool) else len(payload)

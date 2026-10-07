@@ -424,7 +424,8 @@ class TestJson(UseFlowCase):
             "contract_version": 1, "status": "delivered", "skill": "alpha",
             "tree_digest": self.real_digest("alpha"), "chars": len(content),
             "delivery": "inline", "path": None, "confidence": 0.91, "probability": 0.91,
-            "content": content, "reason": None, "scope": "library", "approved_only": False, "hint": None})
+            "content": content, "reason": None, "scope": "library", "approved_only": False, "skipped": [],
+            "hint": None})
 
     def test_delivered_path(self) -> None:
         self.add_skill("alpha", "body " * 100)
@@ -445,7 +446,8 @@ class TestJson(UseFlowCase):
         self.assertIsNone(d["content"])
         self.assertEqual(d["reason"], "uncertain")
         self.assertEqual(set(d), {"contract_version", "status", "skill", "tree_digest", "chars", "delivery", "path",
-                                  "confidence", "probability", "content", "reason", "scope", "approved_only", "hint"})
+                                  "confidence", "probability", "content", "reason", "scope", "approved_only", "skipped",
+                                  "hint"})
         self.assertIsNone(d["hint"])
 
     def test_error_has_no_content(self) -> None:

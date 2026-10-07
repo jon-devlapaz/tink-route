@@ -30,13 +30,13 @@ tink-route [--skillset NAME | --anywhere] [--approved-only] [--receipt PATH] [--
 | `tink-route "<task>"` | Route, verify the winner, print the skill (or its path). |
 | `tink-route --pick "<task>"` | Decide only. Prints `Skill: <name> (confidence 0.xx)` or `No specialist skill applies to this task.` Mounts nothing, writes nothing, no receipt. |
 | `tink-route --json ...` | Machine-readable output for either command. |
-| `tink-route --approved-only ...` | Route only among skills approved in Tink (`$TINK_HOME/approvals.json`), so the pick is one delivery can hand out and an unapproved skill can't hide an approved runner-up. A missing or malformed approvals file is `approvals_unreadable` and an empty one is `no_approved_skills`; it never falls back to the whole library. |
+| `tink-route --approved-only ...` | Route only among skills approved in Tink (`$TINK_HOME/approvals.json`), so the pick is one delivery can hand out and an unapproved skill can't hide an approved runner-up. A missing or malformed approvals file is `approvals_unreadable` and an empty one is `no_approved_skills`; it never falls back to the whole library. Routing checks names only; if `tink mount` then refuses the winner (`digest_mismatch`, `unapproved`), it routes once more without it and reports it in `skipped` and on stderr. It cannot be combined with a custom `--library` (`approvals_library_mismatch`). |
 
 Exit codes: `0` delivered (`--pick`: routed), `1` no skill applies, `2` could not deliver, or a usage error. A usage error prints exactly two stderr lines.
 
 `--pick --json` prints `{contract_version, status, task, skillset, scope, approved_only, specialist_noul, winner, probability, confidence, threshold, runner_up, runner_up_probability, margin, elapsed_ms, fits, shortlist}`. `status` is `routed` or the reason nothing was chosen.
 
-Delivery `--json` prints `{contract_version, status: delivered|no_skill|error, skill, tree_digest, chars, delivery: inline|path|none, path, confidence, probability, content, reason, scope, approved_only, hint}`. `--threshold` gates on `probability`. `--pick --json` adds `hint` too when nothing was chosen.
+Delivery `--json` prints `{contract_version, status: delivered|no_skill|error, skill, tree_digest, chars, delivery: inline|path|none, path, confidence, probability, content, reason, scope, approved_only, skipped, hint}`. `--threshold` gates on `probability`. `--pick --json` adds `hint` too when nothing was chosen.
 
 Tuning flags (`--library`, `--model`, `--threshold`, `--tri-gate/--no-tri-gate`, `--rerank/--no-rerank`, `--fits-threshold`, `--deadline`, `--inline-max`) are listed under Advanced in `tink-route --help`.
 
