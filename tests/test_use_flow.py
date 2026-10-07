@@ -547,12 +547,15 @@ class TestPlainMessages(UseFlowCase):
     def test_no_api_key(self) -> None:
         self.add_skill("alpha")
         out, err = io.StringIO(), io.StringIO()
-        with patch.dict(os.environ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.tmp / "no-config")}), \
+                patch("tink_route.core.credentials._from_launchctl", return_value=None), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             os.environ.pop("TYPESAFE_API_KEY", None)
             code = cli.main(["t"])
         self.assertEqual(code, 2)
         self.assertEqual(out.getvalue(),
-                         "Skill routing unavailable: TYPESAFE_API_KEY is not set (set it to enable skill routing); proceed without a skill.\n")
+                         "Skill routing unavailable: no TypeSafe API key was found (set TYPESAFE_API_KEY, or put "
+                         "the key in ~/.config/tink-route/typesafe_api_key with mode 600); proceed without a skill.\n")
 
     def test_route_failed(self) -> None:
         self.add_skill("alpha")
