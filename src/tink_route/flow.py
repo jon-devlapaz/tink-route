@@ -245,10 +245,7 @@ def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | Non
             allowed, required = resolve_skillset(d.skillset, tink_home=get_default_tink_home(), project_dir=cwd)
         except Exception:
             raise FlowError("skillset_error") from None
-    try:
-        everything = [s for s in load_library_skills(library) if s["name"] not in required]
-    except Exception:
-        raise FlowError("library_unreadable") from None
+    approved: set[str] | None = None
     if d.approved_only:
         if library.resolve() != get_default_library_path().resolve():
             raise FlowError("approvals_library_mismatch")
@@ -258,7 +255,10 @@ def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | Non
             raise FlowError("approvals_unreadable") from None
         if not approved:
             raise FlowError("no_approved_skills")
-        everything = [s for s in everything if s["name"] in approved]
+    try:
+        everything = [s for s in load_library_skills(library, only=approved) if s["name"] not in required]
+    except Exception:
+        raise FlowError("library_unreadable") from None
     if exclude:
         everything = [s for s in everything if s["name"] not in exclude]
 
@@ -371,10 +371,11 @@ def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
         rec["scope"] = dec.scope
         rec["skillset"] = dec.skillset
         rec["skill"] = dec.skill
-        if dec.result is not None:
-            rec["confidence"] = dec.result.confidence
-            rec["probability"] = dec.result.probability
-            rec["reason"] = dec.result.status
+        result = dec.result  # a decision that never produced a result reports no numbers, not an earlier one's
+        rec["confidence"] = result.confidence if result is not None else None
+        rec["probability"] = result.probability if result is not None else None
+        if result is not None:
+            rec["reason"] = result.status
 
     try:
         try:

@@ -100,8 +100,12 @@ def parse_skill_metadata(content: str, fallback_name: str) -> dict[str, str]:
     return res
 
 
-def load_library_skills(library_dir: Path) -> list[dict[str, str]]:
-    """Scan library directory and return all skills with non-empty descriptions."""
+def load_library_skills(library_dir: Path, only: set[str] | None = None) -> list[dict[str, str]]:
+    """Scan library directory and return all skills with non-empty descriptions.
+
+    With `only`, skills whose name is not in it are skipped before the duplicate-name check, so an ambiguous
+    name among skills that will never be offered cannot block the ones that will.
+    """
     skills: list[dict[str, str]] = []
     names: set[str] = set()
     if not library_dir.exists() or not library_dir.is_dir():
@@ -119,6 +123,8 @@ def load_library_skills(library_dir: Path) -> list[dict[str, str]]:
             content = skill_file.read_text(encoding="utf-8-sig", errors="replace")
             meta = parse_skill_metadata(content, fallback_name=child.stem if child.is_file() else child.name)
             if meta.get("description"):
+                if only is not None and meta["name"] not in only:
+                    continue
                 if meta["name"] in names:
                     raise ValueError(f"Duplicate skill name in library: {meta['name']}")
                 names.add(meta["name"])

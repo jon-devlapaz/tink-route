@@ -14,6 +14,8 @@ Ways this could fail, written before the code:
 8. An approved skill that changed since approval wins routing, is refused at delivery, and hides an approved
    runner-up (the very failure the flag exists to remove), or the refusal goes unreported.
 9. Tink's approvals, which cover only Tink's library, are applied to a custom --library.
+10. Two unapproved skills sharing a name make --approved-only fail, though neither could be delivered.
+11. When the re-route after a refusal fails, the JSON keeps the discarded winner's confidence and probability.
 """
 import contextlib
 import io
@@ -154,6 +156,32 @@ class ApprovedOnlyTest(unittest.TestCase):
         code, result = self.run_cli("--pick", "--approved-only", "--library", str(custom))
         self.assertEqual((code, result["reason"]), (2, "approvals_library_mismatch"))
         self.assertEqual(self.offered, [])
+
+    def test_duplicate_names_among_unapproved_skills_do_not_block_approved_routing(self):
+        for folder in ("dup-a", "dup-b"):
+            (self.home / "skills" / folder).mkdir()
+            (self.home / "skills" / folder / "SKILL.md").write_text("---\nname: shared\ndescription: d\n---\n")
+        code, result = self.run_cli("--pick", "--approved-only")
+        self.assertEqual((code, result["status"]), (0, "routed"))
+        self.assertEqual(self.offered[-1], ["approved-one", "approved-two"])
+        code, result = self.run_cli("--pick")  # the whole library still refuses an ambiguous name
+        self.assertEqual((code, result["reason"]), (2, "library_unreadable"))
+
+    def test_failed_reroute_does_not_report_the_discarded_winners_numbers(self):
+        FakeExecutor.refuse = {"approved-one": "digest_mismatch"}
+        calls = []
+
+        def route(task, skills, args):
+            calls.append(1)
+            if len(calls) == 2:
+                raise RuntimeError("network")
+            return RoutingResult(status="routed", task=task, winner="approved-one", probability=0.9, confidence=0.7)
+
+        self.route = route
+        code, result = self.run_cli("--approved-only")
+        self.assertEqual((code, result["reason"]), (2, "route_failed"))
+        self.assertEqual((result["skill"], result["confidence"], result["probability"]), (None, None, None))
+        self.assertEqual(result["skipped"], [{"skill": "approved-one", "reason": "digest_mismatch"}])
 
     def test_delivery_json_reports_probability_beside_confidence(self):
         code, result = self.run_cli("--approved-only")
