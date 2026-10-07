@@ -100,8 +100,12 @@ def parse_skill_metadata(content: str, fallback_name: str) -> dict[str, str]:
     return res
 
 
-def load_library_skills(library_dir: Path) -> list[dict[str, str]]:
-    """Scan library directory and return all skills with non-empty descriptions."""
+def load_library_skills(library_dir: Path, only: set[str] | None = None) -> list[dict[str, str]]:
+    """Scan library directory and return all skills with non-empty descriptions.
+
+    With `only`, skills whose name is not in it are skipped before the duplicate-name check, so an ambiguous
+    name among skills that will never be offered cannot block the ones that will.
+    """
     skills: list[dict[str, str]] = []
     names: set[str] = set()
     if not library_dir.exists() or not library_dir.is_dir():
@@ -119,6 +123,8 @@ def load_library_skills(library_dir: Path) -> list[dict[str, str]]:
             content = skill_file.read_text(encoding="utf-8-sig", errors="replace")
             meta = parse_skill_metadata(content, fallback_name=child.stem if child.is_file() else child.name)
             if meta.get("description"):
+                if only is not None and meta["name"] not in only:
+                    continue
                 if meta["name"] in names:
                     raise ValueError(f"Duplicate skill name in library: {meta['name']}")
                 names.add(meta["name"])
@@ -206,3 +212,17 @@ def resolve_skillset(
         + (f"{project_dir / '.tink' / 'skillsets'}, " if project_dir is not None else "")
         + f"{skillset_dir}"
     )
+
+
+def load_approved_skills(tink_home: Path) -> set[str]:
+    """Names in Tink's approvals file (`$TINK_HOME/approvals.json`). Strict: raises ValueError on any problem.
+
+    Only names are read. Whether content still matches its approved digest is checked by `tink mount` at delivery.
+    """
+    try:
+        data = json.loads((tink_home / "approvals.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError("approvals file is missing or not JSON") from exc
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("skills"), dict):
+        raise ValueError("approvals file has an unsupported shape")
+    return {name for name in data["skills"] if isinstance(name, str)}
