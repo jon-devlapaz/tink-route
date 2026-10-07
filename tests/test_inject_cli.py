@@ -131,6 +131,8 @@ class InjectCliTest(unittest.TestCase):
         self.assertIn("Reference guidance", self.context(out))
         self.assertIn("TRACE EVERY SYMPTOM", self.context(out))
         self.assertNotIn("name: root-cause", self.context(out))
+        for word in ("root-cause", "skill", "library"):  # the agent never learns that skills exist
+            self.assertNotIn(word, self.context(out).lower())
         self.assertNotIn("systemMessage", out)
 
     def test_unmatched_and_below_threshold_needs_abstain_quietly(self):
