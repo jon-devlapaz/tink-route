@@ -86,8 +86,9 @@ failure it injects nothing.
 - **Launch:** `tink-inject needs "<need>" ...` or `tink-inject plan PLAN.md` (reads its `needs:` lines) prints
   guidance to prepend to any agent's prompt.
 - **In flight:** the same hook command works for Claude Code (`.claude/settings*.json`) and Codex
-  (`.codex/hooks.json`). Register `tink-inject hook` for `UserPromptSubmit`, `PostToolUse` (matcher `.*`) and
-  `PostToolUseFailure` (matcher `Bash`). It reads the prompt's `needs:` lines, the first touch of a UI, test or docs
+  (`.codex/hooks.json`). Register `tink-inject hook` for `UserPromptSubmit` and `PostToolUse` (matcher `.*`). On
+  Claude Code, also register it for `PostToolUseFailure` (matcher `Bash`). Codex has no such event; its `PostToolUse`
+  also runs after a failing command, and a failing test is recognised from its output. It reads the prompt's `needs:` lines, the first touch of a UI, test or docs
   file, and failing tests.
 - **Pi:** `pi -e <repo>/integrations/pi/inject.ts`.
 - **Measure:** `tink-inject eval tests/eval/inject_needs.json`.
@@ -96,7 +97,8 @@ failure it injects nothing.
 Gates: it abstains below `INJECT_MIN_CONF` (0.75), injects at most `INJECT_MAX_SKILLS` (3) skills per session (a
 failing test is exempt), cuts each text near `INJECT_MAX_CHARS` (9000) at a section boundary, and follows the plan's
 needs over mechanical triggers. `INJECT=off` disables it. Logs and session state live under `INJECT_HOME` (default
-`~/.local/share/tink-inject`).
+`~/.local/share/tink-inject`). Guidance printed by `needs`/`plan` is remembered for that checkout for two hours, so
+the agent's hook session doesn't deliver it again. A malformed setting falls back to its default.
 
 ## Environment
 

@@ -7,6 +7,13 @@ Ways this could fail, written before the move:
 4. A need with no matching skill still injects text.
 5. INJECT=off still injects.
 6. The injector writes into the repository it runs in (it may only write under INJECT_HOME).
+7. A malformed numeric setting crashes at import, before the fail-open boundary.
+8. An unwritable log makes the failure handler itself crash.
+9. A harness session_id with "/" or ".." escapes INJECT_HOME.
+10. An inherited TINK_ROUTE_RECEIPT makes every injection write a tink-route receipt.
+11. Guidance given at launch (`needs`/`plan`) is given again by the hook session in the same checkout.
+12. The first in-flight Write/Edit is missed because the tree baseline is taken after the tool changed it.
+13. Two overlapping hook processes for one session both deliver the same skill.
 """
 import json
 import os
@@ -24,6 +31,10 @@ import json, os, sys
 args = sys.argv[1:]
 task = args[-1]
 mode = os.environ.get("FAKE_ROUTER", "ok")
+if os.environ.get("TINK_ROUTE_RECEIPT"):
+    open(os.environ["TINK_ROUTE_RECEIPT"], "a").write("receipt\n")
+if os.environ.get("FAKE_SLEEP"):
+    import time; time.sleep(float(os.environ["FAKE_SLEEP"]))
 if mode == "crash":
     sys.exit(2)
 if mode == "garbage":
@@ -95,6 +106,59 @@ class InjectCliTest(unittest.TestCase):
         result = self.tink_inject("needs", "find the root cause of a bug")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("TRACE EVERY SYMPTOM", result.stdout)
+
+    def test_malformed_settings_fall_back_to_defaults(self):
+        for name in ("INJECT_MAX_SKILLS", "INJECT_MIN_CONF", "INJECT_MAX_CHARS"):
+            with self.subTest(setting=name):
+                result = self.tink_inject("hook", stdin=self.prompt_event("needs: find the root cause of a bug",
+                                                                          session=name), **{name: "bad"})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("TRACE EVERY SYMPTOM", result.stdout)
+
+    def test_an_unwritable_log_never_breaks_the_hook(self):
+        blocker = self.root / "not-a-dir"
+        blocker.write_text("x")
+        result = self.tink_inject("hook", stdin=self.prompt_event("needs: find the root cause of a bug"),
+                                  INJECT_LOG=str(blocker / "log.jsonl"), INJECT_HOME=str(blocker / "home"))
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_session_ids_cannot_escape_inject_home(self):
+        outside = self.root / "escaped"
+        for session in (str(outside), "../../escaped-too", "a/b"):
+            with self.subTest(session=session):
+                self.tink_inject("hook", stdin=self.prompt_event("needs: find the root cause of a bug", session=session))
+        written = {p.relative_to(self.root) for p in self.root.rglob("*") if p.is_file()
+                   and p.relative_to(self.root).parts[0] not in ("bin", "repo")}  # the repo is checked elsewhere
+        self.assertTrue(written and all(p.parts[0] == "inject-home" for p in written), written)
+        self.assertFalse(outside.exists())
+
+    def test_inherited_receipt_path_is_not_written(self):
+        receipt = self.root / "receipt.jsonl"
+        self.tink_inject("hook", stdin=self.prompt_event("needs: find the root cause of a bug"),
+                         TINK_ROUTE_RECEIPT=str(receipt))
+        self.assertFalse(receipt.exists())
+
+    def test_launch_guidance_is_not_repeated_by_the_hook_session(self):
+        self.assertIn("TRACE EVERY SYMPTOM", self.tink_inject("needs", "find the root cause of a bug").stdout)
+        result = self.tink_inject("hook", stdin=self.prompt_event("needs: find the root cause of a bug", session="agent"))
+        self.assertEqual((result.returncode, result.stdout), (0, ""))
+
+    def test_first_in_flight_write_is_a_first_touch(self):
+        (self.repo / "tests").mkdir()
+        (self.repo / "tests" / "test_new.py").write_text("def test(): pass\n")
+        event = json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": "w1",
+                            "cwd": str(self.repo), "tool_input": {"file_path": str(self.repo / "tests" / "test_new.py")}})
+        result = self.tink_inject("hook", stdin=event)
+        self.assertIn("TRACE EVERY SYMPTOM", result.stdout)
+
+    def test_overlapping_hooks_deliver_once(self):
+        event = self.prompt_event("needs: find the root cause of a bug", session="race")
+        procs = [subprocess.Popen([sys.executable, "-c", "from tink_route.inject import cli; cli()", "hook"],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, cwd=self.repo,
+                                  env={**self.env, "FAKE_SLEEP": "0.5"}) for _ in range(2)]
+        outputs = [p.communicate(event, timeout=60)[0] for p in procs]
+        self.assertEqual(sum(1 for o in outputs if "TRACE EVERY SYMPTOM" in o), 1, outputs)
 
     def test_writes_only_under_inject_home(self):
         self.tink_inject("hook", stdin=self.prompt_event("needs: find the root cause of a bug"))
