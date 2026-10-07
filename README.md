@@ -75,6 +75,29 @@ Removed: reading the `tink:rules` block of `AGENTS.md` (the shelf is now only ev
 
 Verification is delegated to `tink mount --json --payload`: the skill must be approved (`tink library approve`), unchanged since approval (tree digest), and free of symlinks. Only verified content is printed.
 
+## Injection: `tink-inject`
+
+`tink-inject` puts the right skill into an agent's context at the right moment, and the agent never learns that skills
+exist. A *need* is a short line describing expertise, such as `find the root cause of a bug`. Each need is routed:
+first through the project's own `.agents/skills/`, then through the Tink library. Only approved, verified skills are
+delivered, and each one is framed as reference guidance. Every call fails open: a hook always exits 0, and on any
+failure it injects nothing.
+
+- **Launch:** `tink-inject needs "<need>" ...` or `tink-inject plan PLAN.md` (reads its `needs:` lines) prints
+  guidance to prepend to any agent's prompt.
+- **In flight:** the same hook command works for Claude Code (`.claude/settings*.json`) and Codex
+  (`.codex/hooks.json`). Register `tink-inject hook` for `UserPromptSubmit`, `PostToolUse` (matcher `.*`) and
+  `PostToolUseFailure` (matcher `Bash`). It reads the prompt's `needs:` lines, the first touch of a UI, test or docs
+  file, and failing tests.
+- **Pi:** `pi -e <repo>/integrations/pi/inject.ts`.
+- **Measure:** `tink-inject eval tests/eval/inject_needs.json`.
+- **Check:** `tink-inject lint` lists skills that are too long, or that describe a topic instead of when to apply.
+
+Gates: it abstains below `INJECT_MIN_CONF` (0.75), injects at most `INJECT_MAX_SKILLS` (3) skills per session (a
+failing test is exempt), cuts each text near `INJECT_MAX_CHARS` (9000) at a section boundary, and follows the plan's
+needs over mechanical triggers. `INJECT=off` disables it. Logs and session state live under `INJECT_HOME` (default
+`~/.local/share/tink-inject`).
+
 ## Environment
 
 | Variable | Purpose |
