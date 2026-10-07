@@ -49,12 +49,12 @@ def _default_route(task: str, skills: list, args: Any) -> RoutingResult:
         api_key, _source = resolve_api_key()
     except KeyFileInsecure:
         raise FlowError("key_file_insecure", sentence=(
-            f"Skill routing unavailable: the key file {key_file_path()} must be a regular file you own and can "
+            f"Skill routing unavailable: the key file {key_file_path() or '~/.config/tink-route/typesafe_api_key'} must be a UTF-8 text file you own and can "
             "read, readable only by you (chmod 600 it); proceed without a skill.\n")) from None
     if not api_key:
         raise FlowError("no_api_key", sentence=(
             f"Skill routing unavailable: no TypeSafe API key was found (set TYPESAFE_API_KEY, or put the key in "
-            f"{key_file_path()} with mode 600); proceed without a skill.\n"))
+            f"{key_file_path() or '~/.config/tink-route/typesafe_api_key'} with mode 600); proceed without a skill.\n"))
     if args.deadline is not None:
         if not (0 < args.deadline <= 600):
             raise FlowError("bad_deadline", "--deadline must be between 0 and 600 seconds")

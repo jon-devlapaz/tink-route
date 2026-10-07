@@ -12,6 +12,8 @@ Ways this could fail, written before the code:
 8. The key text leaks into stdout, stderr or JSON when routing fails.
 9. Error messages point at ~/.config when XDG_CONFIG_HOME sends the lookup elsewhere.
 10. A FIFO at the key path blocks the open forever instead of being refused.
+11. A non-UTF-8 key file, or a process with no usable home, is reported as a network failure.
+12. On Windows, where mode bits mean nothing, a readable-by-others key file is trusted.
 """
 import contextlib
 import io
@@ -30,6 +32,7 @@ from tink_route.core.models import RoutingResult
 SENTINEL = "sk-SENTINEL-do-not-print-0123456789"
 
 
+@unittest.skipUnless(os.name == "posix", "the key file and its permission checks are POSIX-only")
 class KeyResolutionTest(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -129,6 +132,19 @@ class KeyResolutionTest(unittest.TestCase):
         os.mkfifo(self.key_file, 0o600)
         code, result, _ = self.pick()  # would block forever on a blocking open
         self.assertEqual((code, result["reason"], self.keys_seen), (2, "key_file_insecure", []))
+
+    def test_non_utf8_key_file_is_a_credential_error_not_a_network_error(self):
+        self.key_file.parent.mkdir(parents=True)
+        self.key_file.write_bytes(b"\xff\xfekey")
+        self.key_file.chmod(0o600)
+        code, result, _ = self.pick()
+        self.assertEqual((code, result["reason"], self.keys_seen), (2, "key_file_insecure", []))
+
+    def test_no_usable_home_means_no_key_file(self):
+        os.environ.pop("XDG_CONFIG_HOME")
+        with patch.object(credentials.Path, "home", side_effect=RuntimeError("no home")):
+            self.assertIsNone(credentials.key_file_path())
+            self.assertEqual(credentials.resolve_api_key(), (None, None))
 
     def test_symlinked_key_file_is_refused(self):
         real = self.root / "elsewhere"

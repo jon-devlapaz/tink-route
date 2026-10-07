@@ -11,7 +11,7 @@ pipx install git+https://github.com/jon-devlapaz/tink-route.git   # not on PyPI
 Then store the routing key (paste it at the silent prompt):
 
 ```bash
-dir="${XDG_CONFIG_HOME:-$HOME/.config}/tink-route"; mkdir -p "$dir" && read -rs key && (umask 077; printf '%s\n' "$key" > "$dir/typesafe_api_key.tmp") && chmod 600 "$dir/typesafe_api_key.tmp" && mv "$dir/typesafe_api_key.tmp" "$dir/typesafe_api_key"; unset key
+case "$XDG_CONFIG_HOME" in /*) dir="$XDG_CONFIG_HOME/tink-route";; *) dir="$HOME/.config/tink-route";; esac; mkdir -p "$dir" && read -rs key && (umask 077; printf '%s\n' "$key" > "$dir/typesafe_api_key.tmp") && chmod 600 "$dir/typesafe_api_key.tmp" && mv "$dir/typesafe_api_key.tmp" "$dir/typesafe_api_key"; unset key
 ```
 
 Requires Python 3.11+ and the `tink` CLI on `PATH`. The key file is the reliable place for the key: agent harnesses
@@ -86,7 +86,7 @@ Verification is delegated to `tink mount --json --payload`: the skill must be ap
 
 | Variable | Purpose |
 | :--- | :--- |
-| `TYPESAFE_API_KEY` | Routing model credential. Checked first. If unset or empty, the key is read from `$XDG_CONFIG_HOME/tink-route/typesafe_api_key` (default `~/.config/...`), which must be a regular file you own and can read, with no group or world access (otherwise `key_file_insecure`; error messages name the actual path), then on macOS from `launchctl getenv`. Without a key, routing reports `no_api_key`. The key is never printed. |
+| `TYPESAFE_API_KEY` | Routing model credential. Checked first. If unset or empty, the key is read from `$XDG_CONFIG_HOME/tink-route/typesafe_api_key` (default `~/.config/...`), which must be a UTF-8 regular file you own and can read, with no group or world access (otherwise `key_file_insecure`; error messages name the actual path; the key file is POSIX-only, so on Windows use the variable), then on macOS from `launchctl getenv`. Without a key, routing reports `no_api_key`. The key is never printed. |
 | `XDG_CONFIG_HOME` | Where the key file lives (absolute paths only). |
 | `TINK_HOME` | Library root (default `~/.tink-library`); skills live in `$TINK_HOME/skills`. |
 | `TINK_ROUTE_RECEIPT` | Default receipt path. |
