@@ -19,7 +19,7 @@ class _TinkRouteParser(argparse.ArgumentParser):
         self.exit(2, f"tink-route: error: {message}\nTry: tink-route --help\n")
 
 
-_USAGE = 'tink-route [--skillset NAME | --anywhere] [--pick] [--json] [--receipt PATH] "<task>"'
+_USAGE = 'tink-route [--skillset NAME | --anywhere] [--approved-only] [--pick] [--json] [--receipt PATH] "<task>"'
 
 _EPILOG = (
     "For agents, add one line to AGENTS.md:\n"
@@ -58,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only decide: print the chosen skill, mount nothing, write nothing.",
     )
     opts.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    opts.add_argument(
+        "--approved-only", action="store_true",
+        help="Route only among skills approved in Tink (`tink library approve`), so the pick is deliverable.",
+    )
     opts.add_argument(
         "--receipt", type=Path, default=None, metavar="PATH",
         help="Append one JSON line per delivery to PATH (env: TINK_ROUTE_RECEIPT).",

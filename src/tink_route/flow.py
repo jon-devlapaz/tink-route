@@ -21,7 +21,7 @@ from .adapters.executor import SubprocessExecutor
 from .core.constants import get_default_library_path, get_default_tink_home
 from .core.models import RoutingResult
 from .core.validation import is_valid_skill_name
-from .metadata import load_library_skills, resolve_skillset
+from .metadata import load_approved_skills, load_library_skills, resolve_skillset
 
 try:  # POSIX only; receipts degrade to unlocked O_APPEND elsewhere.
     import fcntl
@@ -100,6 +100,9 @@ _ROUTING_FIXES = {
                         "or set TINK_HOME to its parent for both routing and delivery)",
     "library_unreadable": "the skill library could not be read (run `tink doctor`)",
     "skillset_error": "the skillset could not be resolved (" + _SKILLSET_FIX + ")",
+    "approvals_unreadable": "Tink's approvals file ($TINK_HOME/approvals.json) is missing or unreadable "
+                            "(run `tink doctor`)",
+    "no_approved_skills": "no skills are approved yet (review one, then run `tink library approve <name>`)",
 }
 
 _APPROVE = "review it, then run `tink library approve {name}`"
@@ -187,8 +190,9 @@ def shelves_of(skill: str, cwd: Path) -> list[str]:
 class Decision:
     """Where routing stands: the candidates offered, the shelf, the result, and any off-shelf hint."""
 
-    def __init__(self, skillset: str | None):
+    def __init__(self, skillset: str | None, approved_only: bool = False):
         self.skillset = skillset
+        self.approved_only = approved_only
         self.scope = "skillset" if skillset else "library"
         self.skills: list = []
         self.result: RoutingResult | None = None
@@ -242,6 +246,14 @@ def decide(d: Decision, task: str, args: Any, cwd: Path, route_fn: RouteFn | Non
         everything = [s for s in load_library_skills(library) if s["name"] not in required]
     except Exception:
         raise FlowError("library_unreadable") from None
+    if d.approved_only:
+        try:
+            approved = load_approved_skills(get_default_tink_home())
+        except Exception:
+            raise FlowError("approvals_unreadable") from None
+        if not approved:
+            raise FlowError("no_approved_skills")
+        everything = [s for s in everything if s["name"] in approved]
 
     def attempt(candidates: list) -> None:
         d.skills = candidates
@@ -282,7 +294,7 @@ def pick_json(d: Decision, task: str) -> dict:
     assert d.result is not None
     out = d.result.to_dict()
     res = {"contract_version": CONTRACT_VERSION, "status": out.pop("status"), "task": out.pop("task"),
-           "skillset": d.skillset, "scope": d.scope, **out}
+           "skillset": d.skillset, "scope": d.scope, "approved_only": d.approved_only, **out}
     if not d.routed:
         res["hint"] = d.hint_dict()
     return res
@@ -291,7 +303,7 @@ def pick_json(d: Decision, task: str) -> dict:
 def pick(args: Any, *, route_fn: RouteFn | None = None) -> int:
     """`--pick`: decide only. Mounts nothing, writes nothing. Exit 0 routed, 1 no skill, 2 error."""
     task = args.task.strip()
-    d = Decision(args.skillset)
+    d = Decision(args.skillset, args.approved_only)
     try:
         decide(d, task, args, Path.cwd(), route_fn)
     except FlowError as e:
@@ -321,9 +333,11 @@ def _emit(args: Any, rec: dict, text: str, content: str | None) -> None:
             "delivery": rec["delivery"],
             "path": rec.get("path"),
             "confidence": rec["confidence"],
+            "probability": rec["probability"],
             "content": content if rec["delivery"] == "inline" else None,
             "reason": rec["reason"],
             "scope": rec.get("scope"),
+            "approved_only": args.approved_only,
             "hint": rec.get("hint"),
         }, indent=2))
     else:
@@ -334,10 +348,10 @@ def _emit(args: Any, rec: dict, text: str, content: str | None) -> None:
 def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessExecutor) -> int:
     """Default mode: route, verify with tink, print the skill. Exit 0 delivered, 1 no skill, 2 failed."""
     task = args.task.strip()
-    d = Decision(args.skillset)
+    d = Decision(args.skillset, args.approved_only)
     rec: dict[str, Any] = {
         "task": args.task, "skillset": d.skillset, "status": "error", "skill": None,
-        "tree_digest": None, "chars": None, "delivery": "none", "confidence": None,
+        "tree_digest": None, "chars": None, "delivery": "none", "confidence": None, "probability": None,
         "reason": None, "path": None, "scope": d.scope, "hint": None,
     }
     content: str | None = None
@@ -354,6 +368,7 @@ def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
             rec["skill"] = d.skill
             if d.result is not None:
                 rec["confidence"] = d.result.confidence
+                rec["probability"] = d.result.probability
                 rec["reason"] = d.result.status
         if not d.routed:
             rec["status"] = "no_skill"

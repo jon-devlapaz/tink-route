@@ -295,7 +295,7 @@ class TestUsage(UseFlowCase):
 class TestPick(UseFlowCase):
     """`--pick` decides only: no mount, no writes, no receipt."""
 
-    PICK_FIELDS = {"contract_version", "status", "task", "skillset", "scope", "specialist_noul",
+    PICK_FIELDS = {"contract_version", "status", "task", "skillset", "scope", "approved_only", "specialist_noul",
                    "winner", "probability", "confidence", "threshold", "runner_up",
                    "runner_up_probability", "margin", "elapsed_ms", "fits", "shortlist"}
 
@@ -423,8 +423,8 @@ class TestJson(UseFlowCase):
         self.assertEqual(d, {
             "contract_version": 1, "status": "delivered", "skill": "alpha",
             "tree_digest": self.real_digest("alpha"), "chars": len(content),
-            "delivery": "inline", "path": None, "confidence": 0.91,
-            "content": content, "reason": None, "scope": "library", "hint": None})
+            "delivery": "inline", "path": None, "confidence": 0.91, "probability": 0.91,
+            "content": content, "reason": None, "scope": "library", "approved_only": False, "hint": None})
 
     def test_delivered_path(self) -> None:
         self.add_skill("alpha", "body " * 100)
@@ -444,8 +444,8 @@ class TestJson(UseFlowCase):
         self.assertEqual(d["delivery"], "none")
         self.assertIsNone(d["content"])
         self.assertEqual(d["reason"], "uncertain")
-        self.assertEqual(set(d), {"contract_version", "status", "skill", "tree_digest", "chars",
-                                  "delivery", "path", "confidence", "content", "reason", "scope", "hint"})
+        self.assertEqual(set(d), {"contract_version", "status", "skill", "tree_digest", "chars", "delivery", "path",
+                                  "confidence", "probability", "content", "reason", "scope", "approved_only", "hint"})
         self.assertIsNone(d["hint"])
 
     def test_error_has_no_content(self) -> None:

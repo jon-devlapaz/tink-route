@@ -206,3 +206,17 @@ def resolve_skillset(
         + (f"{project_dir / '.tink' / 'skillsets'}, " if project_dir is not None else "")
         + f"{skillset_dir}"
     )
+
+
+def load_approved_skills(tink_home: Path) -> set[str]:
+    """Names in Tink's approvals file (`$TINK_HOME/approvals.json`). Strict: raises ValueError on any problem.
+
+    Only names are read. Whether content still matches its approved digest is checked by `tink mount` at delivery.
+    """
+    try:
+        data = json.loads((tink_home / "approvals.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError("approvals file is missing or not JSON") from exc
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("skills"), dict):
+        raise ValueError("approvals file has an unsupported shape")
+    return {name for name in data["skills"] if isinstance(name, str)}
