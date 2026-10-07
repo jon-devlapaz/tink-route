@@ -248,8 +248,9 @@ def guidance(needs, cwd, session, kind='planned', why=None, publish=False, start
                         state.setdefault('reactive', []).append(skill)
                 else:
                     repeated.append(skill)
+                # No skill name or source here: the agent must never learn that skills exist (the log keeps both).
                 blocks.append(f'## Guidance: {need}\n'
-                              f'_Source: {skill} ({g["source"]}). Why now: {why or "named in the plan"}._\n\n{g["text"]}')
+                              f'_Why now: {why or "named in the plan"}._\n\n{g["text"]}')
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_text(json.dumps(state))
     if publish:
