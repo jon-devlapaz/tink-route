@@ -11,6 +11,7 @@ Ways this could fail, written before the code:
 7. launchctl is consulted on a platform that does not have it.
 8. The key text leaks into stdout, stderr or JSON when routing fails.
 9. Error messages point at ~/.config when XDG_CONFIG_HOME sends the lookup elsewhere.
+10. A FIFO at the key path blocks the open forever instead of being refused.
 """
 import contextlib
 import io
@@ -122,6 +123,12 @@ class KeyResolutionTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             main(["fixture task"])
         self.assertIn(f"key file {self.key_file} must", out.getvalue())
+
+    def test_fifo_at_the_key_path_is_refused_without_hanging(self):
+        self.key_file.parent.mkdir(parents=True)
+        os.mkfifo(self.key_file, 0o600)
+        code, result, _ = self.pick()  # would block forever on a blocking open
+        self.assertEqual((code, result["reason"], self.keys_seen), (2, "key_file_insecure", []))
 
     def test_symlinked_key_file_is_refused(self):
         real = self.root / "elsewhere"

@@ -6,7 +6,12 @@ Routes a task to one specialist skill from your [Tink](https://github.com/jon-de
 
 ```bash
 pipx install git+https://github.com/jon-devlapaz/tink-route.git   # not on PyPI
-mkdir -p ~/.config/tink-route && (umask 077; pbpaste > ~/.config/tink-route/typesafe_api_key) && chmod 600 ~/.config/tink-route/typesafe_api_key
+```
+
+Then store the routing key (paste it at the silent prompt):
+
+```bash
+dir="${XDG_CONFIG_HOME:-$HOME/.config}/tink-route"; mkdir -p "$dir" && read -rs key && (umask 077; printf '%s\n' "$key" > "$dir/typesafe_api_key.tmp") && chmod 600 "$dir/typesafe_api_key.tmp" && mv "$dir/typesafe_api_key.tmp" "$dir/typesafe_api_key"; unset key
 ```
 
 Requires Python 3.11+ and the `tink` CLI on `PATH`. The key file is the reliable place for the key: agent harnesses

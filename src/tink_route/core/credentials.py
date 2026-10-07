@@ -29,16 +29,19 @@ def key_file_path() -> Path:
 def _from_file(path: Path) -> str | None:
     """Open once without following symlinks, then validate and read that same descriptor (no swap window)."""
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        # O_NONBLOCK so a FIFO at the key path is rejected by fstat below instead of hanging the open.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
         return None
     except OSError:  # a symlink (ELOOP), or a file its owner cannot read
         raise KeyFileInsecure() from None
     with os.fdopen(fd, "rb") as handle:
         info = os.fstat(handle.fileno())
-        owner_ok = not hasattr(os, "getuid") or info.st_uid == os.getuid()
-        if not stat.S_ISREG(info.st_mode) or not owner_ok or info.st_mode & 0o077 or not info.st_mode & stat.S_IRUSR:
+        if not stat.S_ISREG(info.st_mode):
             raise KeyFileInsecure()
+        if os.name == "posix":  # Windows has no owner/group/world mode bits; its ACLs are not checked here
+            if info.st_uid != os.getuid() or info.st_mode & 0o077 or not info.st_mode & stat.S_IRUSR:
+                raise KeyFileInsecure()
         return handle.read().decode("utf-8").strip() or None
 
 
