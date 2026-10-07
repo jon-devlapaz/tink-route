@@ -3,12 +3,27 @@
 import { execFileSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+// Degradation is for the operator, once per message: never part of what the agent sees.
+const warned = new Set<string>();
+function warn(message: string) {
+  if (warned.has(message)) return;
+  warned.add(message);
+  console.error(message);
+}
+
 function inject(event: Record<string, unknown>): string | undefined {
   try {
-    const out = execFileSync("tink-inject", ["hook"], { input: JSON.stringify(event), encoding: "utf8", timeout: 120_000 });
-    return out.trim() ? JSON.parse(out).hookSpecificOutput?.additionalContext : undefined;
-  } catch {
-    return undefined; // fail open
+    const out = execFileSync("tink-inject", ["hook"], {
+      input: JSON.stringify(event), encoding: "utf8", timeout: 120_000, stdio: ["pipe", "pipe", "ignore"],
+    });
+    if (!out.trim()) return undefined;
+    const result = JSON.parse(out);
+    if (result.systemMessage) warn(result.systemMessage);
+    return result.hookSpecificOutput?.additionalContext;
+  } catch (error: any) {
+    // Fail open for the agent, but say so: a missing `tink-inject` or a timeout must not be silent.
+    warn(`tink-inject: guidance unavailable (${error?.code ?? error?.signal ?? "error"}); the agent continues without it.`);
+    return undefined;
   }
 }
 

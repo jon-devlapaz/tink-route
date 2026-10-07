@@ -353,8 +353,12 @@ def _emit(args: Any, rec: dict, text: str, content: str | None) -> None:
         sys.stdout.flush()
 
 
-def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessExecutor) -> int:
-    """Default mode: route, verify with tink, print the skill. Exit 0 delivered, 1 no skill, 2 failed."""
+def deliver_record(args: Any, *, route_fn: RouteFn | None = None,
+                   executor: SubprocessExecutor) -> tuple[int, dict, str, str | None]:
+    """Route and verify without printing: (exit code, record, the text delivery would print, verified content).
+
+    The in-process seam for callers such as tink-inject; `deliver` adds the output and the receipt.
+    """
     task = args.task.strip()
     d = Decision(args.skillset, args.approved_only)
     rec: dict[str, Any] = {
@@ -444,6 +448,12 @@ def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessE
         code = 2
         text = e.sentence or failure_text(e.reason, rec["skill"])
 
+    return code, rec, text, content
+
+
+def deliver(args: Any, *, route_fn: RouteFn | None = None, executor: SubprocessExecutor) -> int:
+    """Default mode: route, verify with tink, print the skill. Exit 0 delivered, 1 no skill, 2 failed."""
+    code, rec, text, content = deliver_record(args, route_fn=route_fn, executor=executor)
     _emit(args, rec, text, content)
 
     receipt = args.receipt or os.environ.get("TINK_ROUTE_RECEIPT")

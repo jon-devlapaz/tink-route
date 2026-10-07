@@ -134,31 +134,62 @@ def body(content):
     return head[:cut if cut > limit // 2 else limit].rstrip() + '\n\n(Shortened to its opening sections.)'
 
 
-def route(need, cwd):
-    """Yield {skill, source, confidence, text} for one need: the project's skills first, then the library."""
+def budget():
+    return setting('INJECT_BUDGET', '90', float)
+
+
+def _route_args(need, library_path, pick, approved_only, deadline):
+    from types import SimpleNamespace
+    from .adapters.client import DEFAULT_MODEL
+    from .core.constants import FITS_THRESHOLD
+    # The router gates on `probability` at INJECT_MIN_CONF. Inline delivery keeps content in memory; nothing is mounted.
+    return SimpleNamespace(task=need, skillset=None, anywhere=True, pick=pick, json=True, receipt=None,
+                           library=library_path, model=DEFAULT_MODEL, threshold=min_conf(), tri_gate=True, rerank=True,
+                           fits_threshold=FITS_THRESHOLD, deadline=deadline, inline_max=10 ** 9,
+                           approved_only=approved_only)
+
+
+def route(need, cwd, deadline):
+    """Outcomes for one need, project skills first, then the library: each is a dict with `kind`
+    deliver (with `text`), abstain (the router found nothing good enough; healthy) or degraded (anything broke).
+    In process: no subprocess, PATH lookup or output parsing that could fail silently."""
+    from . import flow
+    from .adapters.executor import DefaultSubprocessExecutor
+    from .core.constants import get_default_library_path
+    outcomes = []
     house = Path(cwd) / '.agents' / 'skills'
     if any(house.glob('*/SKILL.md')):
-        r = tink_route('--pick', '--library', str(house), need)
-        skill, conf = r.get('winner'), r.get('probability') or 0
-        if r.get('status') == 'routed' and conf >= min_conf() and (house / str(skill) / 'SKILL.md').is_file():
-            # Project skills are committed with the repo and reviewed there, so they need no library approval.
-            yield {'skill': skill, 'source': 'project', 'confidence': conf, 'text': body((house / skill / 'SKILL.md').read_text())}
-    # A high inline limit keeps delivery in memory: tink checks approval and digest, and nothing is mounted.
-    r = tink_route('--anywhere', '--inline-max', '200000', need)
-    conf = r.get('confidence') or 0
-    if r.get('status') == 'delivered' and r.get('content') and conf >= min_conf():
-        yield {'skill': r['skill'], 'source': 'library', 'confidence': conf, 'text': body(r['content'])}
+        # Project skills are committed with the repo and reviewed there, so they need no library approval.
+        d = flow.Decision(None)
+        try:
+            flow.decide(d, need, _route_args(need, house, True, False, deadline), Path(cwd), None)
+            if d.routed and (house / str(d.skill) / 'SKILL.md').is_file():
+                outcomes.append({'source': 'project', 'kind': 'deliver', 'skill': d.skill,
+                                 'probability': d.result.probability, 'text': body((house / d.skill / 'SKILL.md').read_text())})
+            else:
+                outcomes.append({'source': 'project', 'kind': 'abstain', 'reason': d.result.status if d.result else None})
+        except flow.FlowError as e:
+            outcomes.append({'source': 'project', 'kind': 'degraded', 'reason': e.reason})
+    args = _route_args(need, get_default_library_path(), False, True, deadline)
+    _code, rec, _text, content = flow.deliver_record(args, executor=DefaultSubprocessExecutor())
+    if rec['status'] == 'delivered' and content:
+        outcomes.append({'source': 'library', 'kind': 'deliver', 'skill': rec['skill'],
+                         'probability': rec['probability'], 'text': body(content)})
+    elif rec['status'] == 'no_skill':
+        outcomes.append({'source': 'library', 'kind': 'abstain', 'reason': rec['reason'], 'probability': rec['probability']})
     else:
-        log({'need': need, 'status': 'abstained' if r.get('status') == 'delivered' else r.get('status'),
-             'skill': r.get('skill'), 'confidence': conf, 'reason': r.get('reason')})
+        outcomes.append({'source': 'library', 'kind': 'degraded', 'reason': rec['reason'], 'skill': rec['skill']})
+    return outcomes
 
 
-def guidance(needs, cwd, session, kind='planned', why=None, publish=False):
-    """Route needs of one kind and return the guidance to add, applying the session's gates.
+def guidance(needs, cwd, session, kind='planned', why=None, publish=False, started=None):
+    """Route needs of one kind, apply the session's gates and return (guidance text, degraded reasons).
 
     `publish` (launch-time `needs`/`plan`) records the plan for the checkout, so the agent's hook session, which
-    has its own session id, starts knowing what was planned and already given.
+    has its own session id, starts knowing what was planned and already given. Degraded reasons are for the
+    operator only; they never enter the guidance text.
     """
+    started = time.monotonic() if started is None else started
     state_file = session_file(session, '.json')
     if state_file.exists():
         state = json.loads(state_file.read_text())
@@ -174,44 +205,64 @@ def guidance(needs, cwd, session, kind='planned', why=None, publish=False):
     given = state.setdefault('given', [])          # skills delivered so far
     planned = state.setdefault('planned', [])      # skills the plan asked for
     repeated = state.setdefault('repeated', [])    # planned skills already repeated at their point of use
-    blocks = []
+    blocks, degraded = [], []
     for need in dict.fromkeys(n.strip() for n in needs if n.strip()):
+        remaining = budget() - (time.monotonic() - started)
+        if remaining <= 0:  # stop before the harness kills the hook and nothing gets logged
+            log({'need': need, 'kind': kind, 'status': 'skipped', 'reason': 'budget_exhausted', 'degraded': True,
+                 'session': session})
+            degraded.append('budget_exhausted')
+            continue
         try:
-            for g in route(need, cwd):
-                skill, verdict = g['skill'], None
-                counted = len([s for s in given if s not in state.get('reactive', [])])
-                if kind == 'planned':
-                    planned.append(skill) if skill not in planned else None
-                    verdict = 'already given' if skill in given else 'over cap' if counted >= max_skills() else 'deliver'
-                elif kind == 'first-touch':
-                    if planned and skill not in planned:
-                        verdict = 'not in plan'
-                    elif skill in given:
-                        verdict = 'repeat at point of use' if skill in planned and skill not in repeated else 'already given'
-                    else:
-                        verdict = 'over cap' if counted >= max_skills() else 'deliver'
-                else:  # reactive
-                    verdict = 'already given' if skill in given else 'deliver'
-                log({'need': need, 'kind': kind, 'status': verdict, 'skill': skill, 'source': g['source'],
-                     'confidence': g['confidence'], 'session': session})
-                if verdict in ('deliver', 'repeat at point of use'):
-                    if verdict == 'deliver':
-                        given.append(skill)
-                        if kind == 'reactive':
-                            state.setdefault('reactive', []).append(skill)
-                    else:
-                        repeated.append(skill)
-                    blocks.append(f'## Guidance: {need}\n'
-                                  f'_Source: {skill} ({g["source"]}). Why now: {why or "named in the plan"}._\n\n{g["text"]}')
-        except Exception as error:  # fail open
-            log({'need': need, 'status': 'error', 'reason': f'{type(error).__name__}: {error}'[:200]})
+            outcomes = route(need, cwd, deadline=max(1.0, min(30.0, remaining)))
+        except Exception as error:  # fail open; log the type only, a message can carry secrets
+            outcomes = [{'source': 'library', 'kind': 'degraded', 'reason': type(error).__name__}]
+        for g in outcomes:
+            row = {'need': need, 'kind': kind, 'source': g['source'], 'skill': g.get('skill'),
+                   'probability': g.get('probability'), 'reason': g.get('reason'), 'session': session}
+            if g['kind'] != 'deliver':
+                is_degraded = g['kind'] == 'degraded'
+                log(dict(row, status=g['kind'], **({'degraded': True} if is_degraded else {})))
+                if is_degraded:
+                    degraded.append(g['reason'])
+                continue
+            skill = g['skill']
+            counted = len([s for s in given if s not in state.get('reactive', [])])
+            if kind == 'planned':
+                planned.append(skill) if skill not in planned else None
+                verdict = 'already given' if skill in given else 'over cap' if counted >= max_skills() else 'deliver'
+            elif kind == 'first-touch':
+                if planned and skill not in planned:
+                    verdict = 'not in plan'
+                elif skill in given:
+                    verdict = 'repeat at point of use' if skill in planned and skill not in repeated else 'already given'
+                else:
+                    verdict = 'over cap' if counted >= max_skills() else 'deliver'
+            else:  # reactive
+                verdict = 'already given' if skill in given else 'deliver'
+            log(dict(row, status=verdict))
+            if verdict in ('deliver', 'repeat at point of use'):
+                if verdict == 'deliver':
+                    given.append(skill)
+                    if kind == 'reactive':
+                        state.setdefault('reactive', []).append(skill)
+                else:
+                    repeated.append(skill)
+                blocks.append(f'## Guidance: {need}\n'
+                              f'_Source: {skill} ({g["source"]}). Why now: {why or "named in the plan"}._\n\n{g["text"]}')
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_text(json.dumps(state))
     if publish:
         plan = plan_file(cwd)
         plan.parent.mkdir(parents=True, exist_ok=True)
         plan.write_text(json.dumps({'given': state.get('given', []), 'planned': state.get('planned', [])}))
-    return (FRAME + '\n\n' + '\n\n'.join(blocks)).strip() if blocks else ''
+    text = (FRAME + '\n\n' + '\n\n'.join(blocks)).strip() if blocks else ''
+    return text, list(dict.fromkeys(degraded))
+
+
+def notice(reasons):
+    return (f'tink-inject: guidance degraded ({", ".join(reasons)}); the agent continues without it. '
+            'Details are in the tink-inject log.')
 
 
 def log(row):
@@ -311,14 +362,15 @@ def hook():
 
 
 def _hook(event, name, session, cwd):
+    started = time.monotonic()
     seen_file = session_file(session, '.seen.json')
     seen = json.loads(seen_file.read_text()) if seen_file.exists() else {'fired': []}
-    blocks = []
+    results = []
     if name == 'UserPromptSubmit':
-        blocks.append(guidance(NEEDS.findall(event.get('prompt', '')), cwd, session, 'planned'))
+        results.append(guidance(NEEDS.findall(event.get('prompt', '')), cwd, session, 'planned', started=started))
     elif event.get('tool_name') == 'TodoWrite':
         todos = (event.get('tool_input') or {}).get('todos', [])
-        blocks.append(guidance([t.get('content', '') for t in todos], cwd, session, 'planned'))
+        results.append(guidance([t.get('content', '') for t in todos], cwd, session, 'planned', started=started))
     else:
         for m in moments(event, seen.setdefault('files', {})):
             if m in seen['fired']:
@@ -326,12 +378,24 @@ def _hook(event, name, session, cwd):
             seen['fired'].append(m)
             kind = 'reactive' if m in REACTIVE else 'first-touch'
             why = 'a test just failed' if m == 'test-fail' else f'first {m.split("-")[0]} work in this session'
-            blocks.append(guidance([MOMENTS[m]], cwd, session, kind, why))
+            results.append(guidance([MOMENTS[m]], cwd, session, kind, why, started=started))
+    texts = [t for t, _ in results if t]
+    text = '\n\n'.join([texts[0]] + [t.replace(FRAME + '\n\n', '', 1) for t in texts[1:]]) if texts else ''
+    # Degradation goes to the operator, once per session per reason, and never into the agent's context.
+    notified = seen.setdefault('notified', [])
+    fresh = [r for _, reasons in results for r in reasons if r not in notified]
+    fresh = list(dict.fromkeys(fresh))
+    notified.extend(fresh)
     seen_file.parent.mkdir(parents=True, exist_ok=True)
     seen_file.write_text(json.dumps(seen))
-    text = '\n\n'.join(b for b in blocks if b)
+    out = {}
     if text:
-        print(json.dumps({'hookSpecificOutput': {'hookEventName': name, 'additionalContext': text}}))
+        out['hookSpecificOutput'] = {'hookEventName': name, 'additionalContext': text}
+    if fresh:
+        out['systemMessage'] = notice(fresh)
+        sys.stderr.write(notice(fresh) + '\n')
+    if out:
+        print(json.dumps(out))
 
 
 # --- measurement ------------------------------------------------------------------
@@ -384,7 +448,11 @@ def main(argv):
     if argv[0] in ('needs', 'plan'):
         needs = argv[1:] if argv[0] == 'needs' else NEEDS.findall(Path(argv[1]).read_text())
         with session_lock(session):
-            print(guidance(needs, cwd, session, 'planned', publish=True))
+            text, degraded = guidance(needs, cwd, session, 'planned', publish=True)
+        if text:
+            print(text)
+        if degraded:
+            sys.stderr.write(notice(degraded) + '\n')
     elif argv[0] == 'hook':
         hook()
     elif argv[0] == 'eval':
@@ -397,8 +465,8 @@ def cli():
     """Console entry point (`tink-inject`). Fails open: never breaks the agent that called it."""
     try:
         main(sys.argv[1:])
-    except Exception as error:
-        log({'status': 'error', 'reason': f'{type(error).__name__}: {error}'[:200]})
+    except Exception as error:  # the type only: an error message can carry secrets
+        log({'status': 'error', 'reason': type(error).__name__, 'degraded': True})
 
 
 if __name__ == '__main__':
