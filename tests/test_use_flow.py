@@ -555,7 +555,8 @@ class TestPlainMessages(UseFlowCase):
         self.assertEqual(code, 2)
         self.assertEqual(out.getvalue(),
                          "Skill routing unavailable: no TypeSafe API key was found (set TYPESAFE_API_KEY, or put "
-                         "the key in ~/.config/tink-route/typesafe_api_key with mode 600); proceed without a skill.\n")
+                         f"the key in {self.tmp / 'no-config' / 'tink-route' / 'typesafe_api_key'} with mode 600); "
+                         "proceed without a skill.\n")
 
     def test_route_failed(self) -> None:
         self.add_skill("alpha")

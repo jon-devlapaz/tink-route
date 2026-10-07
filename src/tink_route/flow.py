@@ -19,7 +19,7 @@ from typing import Any, Callable
 from .adapters.client import JevRouterClient
 from .adapters.executor import SubprocessExecutor
 from .core.constants import get_default_library_path, get_default_tink_home
-from .core.credentials import KeyFileInsecure, resolve_api_key
+from .core.credentials import KeyFileInsecure, key_file_path, resolve_api_key
 from .core.models import RoutingResult
 from .core.validation import is_valid_skill_name
 from .metadata import load_library_skills, resolve_skillset
@@ -48,9 +48,13 @@ def _default_route(task: str, skills: list, args: Any) -> RoutingResult:
     try:
         api_key, _source = resolve_api_key()
     except KeyFileInsecure:
-        raise FlowError("key_file_insecure") from None
+        raise FlowError("key_file_insecure", sentence=(
+            f"Skill routing unavailable: the key file {key_file_path()} must be a regular file you own and can "
+            "read, readable only by you (chmod 600 it); proceed without a skill.\n")) from None
     if not api_key:
-        raise FlowError("no_api_key", "no TypeSafe API key was found")
+        raise FlowError("no_api_key", sentence=(
+            f"Skill routing unavailable: no TypeSafe API key was found (set TYPESAFE_API_KEY, or put the key in "
+            f"{key_file_path()} with mode 600); proceed without a skill.\n"))
     if args.deadline is not None:
         if not (0 < args.deadline <= 600):
             raise FlowError("bad_deadline", "--deadline must be between 0 and 600 seconds")
@@ -96,10 +100,8 @@ def _write_receipt(path: Path, record: dict) -> None:
 
 _SKILLSET_FIX = "see `tink skillset list` or check the pin under .tink/skillsets or $TINK_HOME/skillsets"
 _ROUTING_FIXES = {
-    "no_api_key": "no TypeSafe API key was found (set TYPESAFE_API_KEY, or put the key in "
-                  "~/.config/tink-route/typesafe_api_key with mode 600)",
-    "key_file_insecure": "the key file ~/.config/tink-route/typesafe_api_key must be a regular file you own, "
-                         "readable only by you (chmod 600 it)",
+    "no_api_key": "no TypeSafe API key was found (set TYPESAFE_API_KEY, or use the key file; see README)",
+    "key_file_insecure": "the routing key file must be a regular file you own, readable only by you (chmod 600 it)",
     "route_failed": "the routing service call failed (network or API error; retry later)",
     "library_missing": "the skill library was not found (default ~/.tink-library/skills or "
                        "$TINK_HOME/skills; override with --library)",

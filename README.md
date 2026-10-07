@@ -6,7 +6,7 @@ Routes a task to one specialist skill from your [Tink](https://github.com/jon-de
 
 ```bash
 pipx install git+https://github.com/jon-devlapaz/tink-route.git   # not on PyPI
-mkdir -p ~/.config/tink-route && (umask 077; pbpaste > ~/.config/tink-route/typesafe_api_key)  # the routing key
+mkdir -p ~/.config/tink-route && (umask 077; pbpaste > ~/.config/tink-route/typesafe_api_key) && chmod 600 ~/.config/tink-route/typesafe_api_key
 ```
 
 Requires Python 3.11+ and the `tink` CLI on `PATH`. The key file is the reliable place for the key: agent harnesses
@@ -81,7 +81,7 @@ Verification is delegated to `tink mount --json --payload`: the skill must be ap
 
 | Variable | Purpose |
 | :--- | :--- |
-| `TYPESAFE_API_KEY` | Routing model credential. Checked first. If unset or empty, the key is read from `$XDG_CONFIG_HOME/tink-route/typesafe_api_key` (default `~/.config/...`), which must be a regular file you own with mode 600 (otherwise `key_file_insecure`), then on macOS from `launchctl getenv`. Without a key, routing reports `no_api_key`. The key is never printed. |
+| `TYPESAFE_API_KEY` | Routing model credential. Checked first. If unset or empty, the key is read from `$XDG_CONFIG_HOME/tink-route/typesafe_api_key` (default `~/.config/...`), which must be a regular file you own and can read, with no group or world access (otherwise `key_file_insecure`; error messages name the actual path), then on macOS from `launchctl getenv`. Without a key, routing reports `no_api_key`. The key is never printed. |
 | `XDG_CONFIG_HOME` | Where the key file lives (absolute paths only). |
 | `TINK_HOME` | Library root (default `~/.tink-library`); skills live in `$TINK_HOME/skills`. |
 | `TINK_ROUTE_RECEIPT` | Default receipt path. |

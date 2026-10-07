@@ -2,13 +2,15 @@
 
 Ways this could fail, written before the code:
 1. An empty TYPESAFE_API_KEY hides a valid key file.
-2. A group- or world-readable key file is trusted.
+2. A group- or world-readable key file is trusted, or one its owner cannot read reports a network error.
+2b. The file is checked and read through different lookups, so it can be swapped for a symlink in between.
 3. A symlinked key file is trusted (it could point anywhere).
 4. A whitespace-only key file counts as a key.
 5. A relative XDG_CONFIG_HOME is honoured (the XDG spec says to ignore it).
 6. launchctl is missing, fails or hangs, and routing crashes instead of reporting no_api_key.
 7. launchctl is consulted on a platform that does not have it.
 8. The key text leaks into stdout, stderr or JSON when routing fails.
+9. Error messages point at ~/.config when XDG_CONFIG_HOME sends the lookup elsewhere.
 """
 import contextlib
 import io
@@ -99,6 +101,27 @@ class KeyResolutionTest(unittest.TestCase):
                 code, result, _ = self.pick()
                 self.assertEqual((code, result["reason"]), (2, "key_file_insecure"))
         self.assertEqual(self.keys_seen, [])
+
+    def test_key_file_its_owner_cannot_read_is_refused_not_a_network_error(self):
+        if os.geteuid() == 0:
+            self.skipTest("root can read any file")
+        for mode in (0o200, 0o000):
+            with self.subTest(mode=oct(mode)):
+                self.write_key("file-key", mode)
+                code, result, _ = self.pick()
+                self.assertEqual((code, result["reason"]), (2, "key_file_insecure"))
+                self.key_file.chmod(0o600)
+
+    def test_messages_name_the_key_file_actually_consulted(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["fixture task"])
+        self.assertIn(str(self.key_file), out.getvalue())
+        self.write_key("file-key", 0o644)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["fixture task"])
+        self.assertIn(f"key file {self.key_file} must", out.getvalue())
 
     def test_symlinked_key_file_is_refused(self):
         real = self.root / "elsewhere"

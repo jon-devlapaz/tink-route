@@ -27,14 +27,19 @@ def key_file_path() -> Path:
 
 
 def _from_file(path: Path) -> str | None:
+    """Open once without following symlinks, then validate and read that same descriptor (no swap window)."""
     try:
-        info = os.lstat(path)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
         return None
-    owner_ok = not hasattr(os, "getuid") or info.st_uid == os.getuid()
-    if not stat.S_ISREG(info.st_mode) or not owner_ok or info.st_mode & 0o077:
-        raise KeyFileInsecure()
-    return path.read_text(encoding="utf-8").strip() or None
+    except OSError:  # a symlink (ELOOP), or a file its owner cannot read
+        raise KeyFileInsecure() from None
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        owner_ok = not hasattr(os, "getuid") or info.st_uid == os.getuid()
+        if not stat.S_ISREG(info.st_mode) or not owner_ok or info.st_mode & 0o077 or not info.st_mode & stat.S_IRUSR:
+            raise KeyFileInsecure()
+        return handle.read().decode("utf-8").strip() or None
 
 
 def _from_launchctl() -> str | None:
