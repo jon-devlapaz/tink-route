@@ -86,6 +86,8 @@ class InjectCliTest(unittest.TestCase):
         self.assertIn("Reference guidance", context)
         self.assertIn("TRACE EVERY SYMPTOM", context)
         self.assertNotIn("name: root-cause", context)  # front matter is stripped
+        for word in ("root-cause", "skill", "library"):  # the agent never learns that skills exist
+            self.assertNotIn(word, context.lower())
 
     def test_unmatched_need_injects_nothing(self):
         result = self.tink_inject("hook", stdin=self.prompt_event("needs: nothing fits this"))
