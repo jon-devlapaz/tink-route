@@ -588,6 +588,10 @@ def cli():
         code = main(sys.argv[1:]) or 0
     except Exception as error:  # the type only: an error message can carry secrets
         log({'status': 'error', 'reason': type(error).__name__, 'degraded': True})
+        command = sys.argv[1] if len(sys.argv) > 1 else ''
+        if command not in ('hook', 'needs', 'plan'):  # diagnostics must not pass a run that never happened
+            sys.stderr.write(f'tink-inject: {command} failed ({type(error).__name__})\n')
+            code = 2
     sys.exit(code)
 
 

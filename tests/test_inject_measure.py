@@ -12,6 +12,8 @@ Ways this could fail, written before the code:
    or it prints the key.
 5. doctor treats INJECT=off as healthy in strict mode (an experiment arm that injects nothing).
 6. status can't tell a run with degraded rows from a healthy one, or ignores --since.
+7. eval/doctor/status/lint hit an exception (missing or malformed cases file) and exit 0 with no output, so
+   automation reads a run that never happened as a pass.
 """
 import json
 from pathlib import Path
@@ -64,6 +66,15 @@ class InjectMeasureTest(InjectCliTest):
         status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=self.repo,
                                 capture_output=True, text=True, env=self.env).stdout
         self.assertEqual(status, "")
+
+    def test_diagnostic_commands_fail_loudly_on_exceptions(self):
+        bad = self.root / "bad.json"
+        bad.write_text("{not json")
+        for argv in (["eval", str(self.root / "missing.json")], ["eval", str(bad)]):
+            with self.subTest(argv=argv):
+                result = self.run_cmd(*argv)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("tink-inject:", result.stderr)
 
     # doctor ----------------------------------------------------------------------------------------------------
 
