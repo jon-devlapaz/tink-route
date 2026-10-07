@@ -118,12 +118,6 @@ REACTIVE = {'test-fail'}
 
 # --- routing ------------------------------------------------------------------
 
-def tink_route(*args):
-    env = {k: v for k, v in os.environ.items() if k != 'TINK_ROUTE_RECEIPT'}  # injections are not tink-route receipts
-    p = subprocess.run(['tink-route', '--json', *args], capture_output=True, text=True, timeout=30, env=env)
-    return json.loads(p.stdout)
-
-
 def body(content):
     """Guidance text without front matter or title, cut at a section boundary near INJECT_MAX_CHARS."""
     text = re.sub(r'\A---\n.*?\n---\n', '', content, flags=re.S).strip()
