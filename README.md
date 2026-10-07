@@ -6,10 +6,17 @@ Routes a task to one specialist skill from your [Tink](https://github.com/jon-de
 
 ```bash
 pipx install git+https://github.com/jon-devlapaz/tink-route.git   # not on PyPI
-export TYPESAFE_API_KEY=...  # the routing model
 ```
 
-Requires Python 3.11+ and the `tink` CLI on `PATH`.
+Then store the routing key (paste it at the silent prompt):
+
+```bash
+case "$XDG_CONFIG_HOME" in /*) dir="$XDG_CONFIG_HOME/tink-route";; *) dir="$HOME/.config/tink-route";; esac; mkdir -p "$dir" && read -rs key && (umask 077; printf '%s\n' "$key" > "$dir/typesafe_api_key.tmp") && chmod 600 "$dir/typesafe_api_key.tmp" && mv "$dir/typesafe_api_key.tmp" "$dir/typesafe_api_key"; unset key
+```
+
+Requires Python 3.11+ and the `tink` CLI on `PATH`. The key file is the reliable place for the key: agent harnesses
+often start tools from non-interactive shells that never read your shell profile, so an exported variable can
+silently be missing there.
 
 ## For agents
 
@@ -112,7 +119,8 @@ the agent's hook session doesn't deliver it again. A malformed setting falls bac
 
 | Variable | Purpose |
 | :--- | :--- |
-| `TYPESAFE_API_KEY` | Routing model credential. Required. |
+| `TYPESAFE_API_KEY` | Routing model credential. Checked first. If unset or empty, the key is read from `$XDG_CONFIG_HOME/tink-route/typesafe_api_key` (default `~/.config/...`), which must be a UTF-8 regular file you own and can read, with no group or world access (otherwise `key_file_insecure`; error messages name the actual path; the key file is POSIX-only, so on Windows use the variable), then on macOS from `launchctl getenv`. Without a key, routing reports `no_api_key`. The key is never printed. |
+| `XDG_CONFIG_HOME` | Where the key file lives (absolute paths only). |
 | `TINK_HOME` | Library root (default `~/.tink-library`); skills live in `$TINK_HOME/skills`. |
 | `TINK_ROUTE_RECEIPT` | Default receipt path. |
 
