@@ -99,7 +99,15 @@ failure it injects nothing.
   also runs after a failing command, and a failing test is recognised from its output. It reads the prompt's `needs:` lines, the first touch of a UI, test or docs
   file, and failing tests.
 - **Pi:** `pi -e <repo>/integrations/pi/inject.ts`.
-- **Measure:** `tink-inject eval tests/eval/inject_needs.json`.
+- **Measure:** `tink-inject eval tests/eval/inject_needs.json` shows, for each case, the whole-library pick
+  (*routed*) beside what approved-only routing and `tink mount` actually hand out (*delivered*), then delivered and
+  routed recall, correct abstention, wrong skills, and skills that route but can't be delivered (candidates to
+  approve). A degraded setup gets no score: exit 2.
+- **Doctor:** `tink-inject doctor [--json] [--strict]` checks the key (prints only its source), `tink`, the library,
+  approvals, a live canary route and delivery (`--need` overrides it), the log, and `INJECT` (a FAIL under
+  `--strict`, otherwise a WARN). Exit 1 on any FAIL. Run it before an experiment.
+- **Status:** `tink-inject status [--since TS] [--log PATH]` counts delivered, abstained and degraded outcomes; exit 1
+  if any were degraded, so a harness can confirm an "injection on" run really injected.
 - **Check:** `tink-inject lint` lists skills that are too long, or that describe a topic instead of when to apply.
 
 Routing runs in process with `--approved-only` semantics, and the router gates on `probability`. Every outcome is
