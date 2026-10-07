@@ -39,7 +39,10 @@ WRAPPER = f'''
 import os, sys, time
 sys.path.insert(0, {SRC!r})
 import tink_route.flow as flow
+import tink_route.core.credentials as credentials
 from tink_route.core.models import RoutingResult
+
+credentials._from_launchctl = lambda: None  # tests must not pick up a real key from the machine
 
 def fake_route(task, skills, args):
     if os.environ.get("FAKE_SLEEP"):
