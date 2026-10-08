@@ -71,6 +71,8 @@ args = sys.argv[1:]
 if args[:1] != ["mount"]:
     sys.exit(2)
 name, home = args[1], os.environ["TINK_HOME"]
+if name in os.environ.get("FAKE_REFUSE", "").split(","):
+    print(json.dumps({{"code": "digest_mismatch"}})); sys.exit(1)
 approvals = json.load(open(os.path.join(home, "approvals.json")))["skills"]
 if name not in approvals:
     print(json.dumps({{"code": "unapproved"}})); sys.exit(1)
@@ -176,6 +178,17 @@ class InjectCliTest(unittest.TestCase):
         log = (self.home / "log.jsonl").read_text()
         self.assertNotIn(SENTINEL, log)
         self.assertIn('"degraded": true', log)
+
+    def test_a_refused_approved_skill_is_degraded_even_when_the_runner_up_delivers(self):
+        other = self.tink_home / "skills" / "a-changed"
+        other.mkdir()
+        (other / "SKILL.md").write_text("---\nname: a-changed\ndescription: Apply when debugging.\n---\nX\n")
+        (self.tink_home / "approvals.json").write_text(json.dumps(
+            {"version": 1, "skills": {"root-cause": "sha256:x", "a-changed": "sha256:y"}}))
+        _, out = self.hook(FAKE_REFUSE="a-changed")
+        self.assertIn("TRACE EVERY SYMPTOM", self.context(out))  # the approved runner-up still arrives
+        self.assertIn("digest_mismatch", out.get("systemMessage", ""))
+        self.assertNotIn("a-changed", self.context(out))
 
     def test_needs_command_reports_degradation_on_stderr_only(self):
         result = self.tink_inject("needs", "find the root cause of a bug", FAKE_ROUTER="nokey")

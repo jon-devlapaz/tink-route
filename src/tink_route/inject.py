@@ -168,6 +168,8 @@ def route(need, cwd, deadline):
             outcomes.append({'source': 'project', 'kind': 'degraded', 'reason': e.reason})
     args = _route_args(need, get_default_library_path(), False, True, deadline)
     _code, rec, _text, content = flow.deliver_record(args, executor=DefaultSubprocessExecutor())
+    for refused in rec.get('skipped', []):  # tink refused an approved winner: a curation problem the operator must see
+        outcomes.append({'source': 'library', 'kind': 'degraded', 'reason': refused['reason'], 'skill': refused['skill']})
     if rec['status'] == 'delivered' and content:
         outcomes.append({'source': 'library', 'kind': 'deliver', 'skill': rec['skill'],
                          'probability': rec['probability'], 'text': body(content)})
@@ -417,7 +419,7 @@ def evaluate(cases_file):
                 except flow.FlowError as e:
                     routed = None
                     degraded.append(e.reason)
-                outcome = [o for o in route(need, tmp, 30) if o['source'] == 'library'][0]
+                outcome = [o for o in route(need, tmp, 30) if o['source'] == 'library'][-1]
                 if outcome['kind'] == 'degraded':
                     degraded.append(outcome['reason'])
                 delivered = outcome.get('skill') if outcome['kind'] == 'deliver' else None
@@ -480,7 +482,7 @@ def doctor(argv):
         previous = os.getcwd()
         os.chdir(tmp)
         try:
-            outcome = [o for o in route(need, tmp, 30) if o['source'] == 'library'][0]
+            outcome = [o for o in route(need, tmp, 30) if o['source'] == 'library'][-1]
             add('canary delivers', outcome['kind'] == 'deliver',
                 outcome.get('skill') if outcome['kind'] == 'deliver' else outcome.get('reason') or outcome['kind'])
         except Exception as e:
