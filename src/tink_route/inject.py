@@ -20,12 +20,14 @@ Entry points (console command `tink-inject`):
   tink-inject needs "line" ["line" ...]   guidance for these needs, as plain text for any prompt
   tink-inject plan PLAN.md                guidance for every `needs:` line in a plan file
   tink-inject hook                        one harness event (Claude Code / Codex hook JSON) on stdin -> hook output
-  tink-inject eval CASES.json             routing precision, recall and abstention on [{"need", "expect"}] cases
+  tink-inject eval CASES.json             routed vs delivered recall and abstention on [{"need", "expect"}] cases
+  tink-inject doctor [--json] [--strict]  check key, tink, library, approvals and a live canary delivery
+  tink-inject status [--since TS]         delivered / abstained / degraded counts in the log; exit 1 if degraded
   tink-inject lint                        skills that are too long or describe a topic instead of when to apply
 
 Env: INJECT=off disables it. INJECT_LOG sets the JSONL log (default ~/.local/share/tink-inject/log.jsonl).
 """
-import hashlib, json, os, re, subprocess, sys, time
+import hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -116,12 +118,6 @@ REACTIVE = {'test-fail'}
 
 # --- routing ------------------------------------------------------------------
 
-def tink_route(*args):
-    env = {k: v for k, v in os.environ.items() if k != 'TINK_ROUTE_RECEIPT'}  # injections are not tink-route receipts
-    p = subprocess.run(['tink-route', '--json', *args], capture_output=True, text=True, timeout=30, env=env)
-    return json.loads(p.stdout)
-
-
 def body(content):
     """Guidance text without front matter or title, cut at a section boundary near INJECT_MAX_CHARS."""
     text = re.sub(r'\A---\n.*?\n---\n', '', content, flags=re.S).strip()
@@ -172,6 +168,8 @@ def route(need, cwd, deadline):
             outcomes.append({'source': 'project', 'kind': 'degraded', 'reason': e.reason})
     args = _route_args(need, get_default_library_path(), False, True, deadline)
     _code, rec, _text, content = flow.deliver_record(args, executor=DefaultSubprocessExecutor())
+    for refused in rec.get('skipped', []):  # tink refused an approved winner: a curation problem the operator must see
+        outcomes.append({'source': 'library', 'kind': 'degraded', 'reason': refused['reason'], 'skill': refused['skill']})
     if rec['status'] == 'delivered' and content:
         outcomes.append({'source': 'library', 'kind': 'deliver', 'skill': rec['skill'],
                          'probability': rec['probability'], 'text': body(content)})
@@ -402,28 +400,134 @@ def _hook(event, name, session, cwd):
 # --- measurement ------------------------------------------------------------------
 
 def evaluate(cases_file):
-    """Precision, recall and abstention of library routing at INJECT_MIN_CONF."""
+    """Score routing as delivery sees it: for each case, the whole-library pick ("routed") beside what approved-only
+    routing and tink actually hand out ("delivered"). A degraded setup gets no score (exit 2)."""
+    from . import flow
+    from .core.constants import get_default_library_path
     cases = json.loads(Path(cases_file).read_text())
-    rows, hit, wrong, abstained_ok, missed = [], 0, 0, 0, 0
-    for c in cases:
-        r = tink_route('--pick', '--anywhere', c['need'])
-        conf = r.get('probability') or 0
-        got = r.get('winner') if r.get('status') == 'routed' and conf >= min_conf() else None
-        ok = got == c.get('expect') or (got and got in c.get('also', []))
-        if c.get('expect') is None:
-            abstained_ok += got is None
-            wrong += got is not None
-        else:
-            hit += bool(ok)
-            missed += got is None
-            wrong += bool(got) and not ok
-        rows.append(f"{'ok ' if ok or (got is None and c.get('expect') is None) else 'BAD'} {conf:4.2f} "
-                    f"{str(got):40} expect {str(c.get('expect')):40} {c['need']}")
-    pos = sum(1 for c in cases if c.get('expect')); neg = len(cases) - pos
-    delivered = sum(1 for row in rows if ' None ' not in row.split('expect')[0])
-    print('\n'.join(rows))
-    print(f'\nthreshold {min_conf()}: recall {hit}/{pos}, correct abstention {abstained_ok}/{neg}, '
-          f'wrong skill {wrong}, missed {missed}, precision {hit}/{max(1, delivered)}')
+    rows, degraded = [], []
+    with tempfile.TemporaryDirectory() as tmp:  # tink mount may write under the cwd; keep it out of any repo
+        previous = os.getcwd()
+        os.chdir(tmp)
+        try:
+            for case in cases:
+                need = case['need']
+                d = flow.Decision(None, False)
+                try:
+                    flow.decide(d, need, _route_args(need, get_default_library_path(), True, False, 30), Path(tmp), None)
+                    routed = d.skill if d.routed else None
+                except flow.FlowError as e:
+                    routed = None
+                    degraded.append(e.reason)
+                outcome = [o for o in route(need, tmp, 30) if o['source'] == 'library'][-1]
+                if outcome['kind'] == 'degraded':
+                    degraded.append(outcome['reason'])
+                delivered = outcome.get('skill') if outcome['kind'] == 'deliver' else None
+                rows.append((case, routed, delivered, outcome.get('reason') or outcome['kind']))
+        finally:
+            os.chdir(previous)
+    if degraded:
+        print(f"degraded ({', '.join(dict.fromkeys(degraded))}): no score; run `tink-inject doctor`, fix it, then rerun")
+        return 2
+    accept = lambda case: {case.get('expect'), *case.get('also', [])} - {None}
+    positives = [r for r in rows if r[0].get('expect')]
+    negatives = [r for r in rows if not r[0].get('expect')]
+    for case, routed, delivered, note in rows:
+        good = delivered in accept(case) if case.get('expect') else delivered is None
+        print(f"{'ok ' if good else 'BAD'} routed {str(routed):38} delivered {str(delivered):38} {note:16} {case['need']}")
+    wrong = sum(1 for c, _, d, _ in positives if d and d not in accept(c)) + sum(1 for _, _, d, _ in negatives if d)
+    stuck = sorted({r for _, r, d, _ in rows if r and r != d})
+    print(f"\nthreshold {min_conf()}: delivered recall {sum(1 for c, _, d, _ in positives if d in accept(c))}/{len(positives)}, "
+          f"routed recall {sum(1 for c, r, _, _ in positives if r in accept(c))}/{len(positives)}, "
+          f"correct abstention {sum(1 for _, _, d, _ in negatives if d is None)}/{len(negatives)}, wrong skill {wrong}")
+    print(f"routed but not deliverable: {', '.join(stuck) or 'none'}")
+    return 0
+
+
+def doctor(argv):
+    """Check every part injection depends on. Exit 1 on any FAIL. The key itself is never printed."""
+    from . import flow
+    from .core.constants import get_default_library_path, get_default_tink_home
+    from .core.credentials import KeyFileInsecure, resolve_api_key
+    from .metadata import load_approved_skills
+    strict, as_json = '--strict' in argv, '--json' in argv
+    need = argv[argv.index('--need') + 1] if '--need' in argv[:-1] else 'find the root cause of a bug'
+    checks = []
+
+    def add(name, ok, detail, level='FAIL'):
+        checks.append({'check': name, 'status': 'PASS' if ok else level, 'detail': detail})
+
+    try:
+        key, source = resolve_api_key()
+        add('key', bool(key), f'from {source}' if key else 'no TypeSafe API key found (see the tink-route README)')
+    except KeyFileInsecure:
+        add('key', False, 'the key file must be yours and readable only by you (chmod 600)')
+    add('tink', bool(shutil.which('tink')), 'on PATH' if shutil.which('tink') else 'the tink CLI is not on PATH')
+    library_path = get_default_library_path()
+    add('library', library_path.is_dir() and any(library_path.glob('*/SKILL.md')), str(library_path))
+    try:
+        count = len(load_approved_skills(get_default_tink_home()))
+        add('approvals', count > 0, f'{count} approved' if count else 'none approved (tink library approve <name>)')
+    except Exception:
+        add('approvals', False, 'the approvals file is missing or unreadable')
+    with tempfile.TemporaryDirectory() as tmp:
+        d = flow.Decision(None, True)
+        try:
+            flow.decide(d, need, _route_args(need, library_path, True, True, 30), Path(tmp), None)
+            add('canary routes', d.routed, d.skill if d.routed else f'no skill ({d.result.status if d.result else "none"})')
+        except flow.FlowError as e:
+            add('canary routes', False, e.reason)
+        except Exception as e:
+            add('canary routes', False, type(e).__name__)
+        previous = os.getcwd()
+        os.chdir(tmp)
+        try:
+            outcome = [o for o in route(need, tmp, 30) if o['source'] == 'library'][-1]
+            add('canary delivers', outcome['kind'] == 'deliver',
+                outcome.get('skill') if outcome['kind'] == 'deliver' else outcome.get('reason') or outcome['kind'])
+        except Exception as e:
+            add('canary delivers', False, type(e).__name__)
+        finally:
+            os.chdir(previous)
+    try:
+        path = log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        open(path, 'a').close()
+        add('log writable', True, str(path))
+    except Exception as e:
+        add('log writable', False, type(e).__name__)
+    off = os.environ.get('INJECT') == 'off'
+    add('injection enabled', not off, 'INJECT=off' if off else 'on', 'FAIL' if strict else 'WARN')
+    ok = all(c['status'] != 'FAIL' for c in checks)
+    if as_json:
+        print(json.dumps({'ok': ok, 'checks': checks}, indent=2))
+    else:
+        print('\n'.join(f"{c['status']} {c['check']}: {c['detail']}" for c in checks))
+    return 0 if ok else 1
+
+
+def status(argv):
+    """Counts of delivered, abstained and degraded outcomes in the log (since --since). Exit 1 if any degraded."""
+    since = argv[argv.index('--since') + 1] if '--since' in argv[:-1] else ''
+    path = Path(argv[argv.index('--log') + 1]) if '--log' in argv[:-1] else log_path()
+    counts, reasons = {'delivered': 0, 'abstained': 0, 'degraded': 0}, []
+    for line in path.read_text().splitlines() if path.is_file() else []:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get('ts', '') < since:
+            continue
+        if row.get('degraded'):
+            counts['degraded'] += 1
+            reasons.append(str(row.get('reason')))
+        elif row.get('status') in ('deliver', 'repeat at point of use'):
+            counts['delivered'] += 1
+        elif row.get('status') == 'abstain':
+            counts['abstained'] += 1
+    detail = f" ({', '.join(dict.fromkeys(reasons))})" if reasons else ''
+    print(f"delivered {counts['delivered']} · abstained {counts['abstained']} · degraded {counts['degraded']}{detail}")
+    return 1 if counts['degraded'] else 0
 
 
 def lint():
@@ -443,31 +547,48 @@ def lint():
 
 
 def main(argv):
-    if os.environ.get('INJECT') == 'off' or not argv:
-        return
+    if not argv:
+        return 0
+    command = argv[0]
+    if command in ('hook', 'needs', 'plan') and os.environ.get('INJECT') == 'off':
+        return 0
     cwd, session = os.getcwd(), os.environ.get('INJECT_SESSION', f'cli-{os.getppid()}')
-    if argv[0] in ('needs', 'plan'):
-        needs = argv[1:] if argv[0] == 'needs' else NEEDS.findall(Path(argv[1]).read_text())
+    if command in ('needs', 'plan'):
+        needs = argv[1:] if command == 'needs' else NEEDS.findall(Path(argv[1]).read_text())
         with session_lock(session):
             text, degraded = guidance(needs, cwd, session, 'planned', publish=True)
         if text:
             print(text)
         if degraded:
             sys.stderr.write(notice(degraded) + '\n')
-    elif argv[0] == 'hook':
+        return 0
+    if command == 'hook':
         hook()
-    elif argv[0] == 'eval':
-        evaluate(argv[1])
-    elif argv[0] == 'lint':
+        return 0
+    if command == 'eval':
+        return evaluate(argv[1])
+    if command == 'doctor':
+        return doctor(argv[1:])
+    if command == 'status':
+        return status(argv[1:])
+    if command == 'lint':
         lint()
+    return 0
 
 
 def cli():
-    """Console entry point (`tink-inject`). Fails open: never breaks the agent that called it."""
+    """Console entry point (`tink-inject`). Fails open: a hook never breaks the agent that called it.
+    eval, doctor and status return their exit codes (2 or 1 mean a broken setup or degraded injection)."""
+    code = 0
     try:
-        main(sys.argv[1:])
+        code = main(sys.argv[1:]) or 0
     except Exception as error:  # the type only: an error message can carry secrets
         log({'status': 'error', 'reason': type(error).__name__, 'degraded': True})
+        command = sys.argv[1] if len(sys.argv) > 1 else ''
+        if command not in ('hook', 'needs', 'plan'):  # diagnostics must not pass a run that never happened
+            sys.stderr.write(f'tink-inject: {command} failed ({type(error).__name__})\n')
+            code = 2
+    sys.exit(code)
 
 
 if __name__ == '__main__':
