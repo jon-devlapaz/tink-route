@@ -102,6 +102,13 @@ failure it injects nothing.
 - **Measure:** `tink-inject eval tests/eval/inject_needs.json`.
 - **Check:** `tink-inject lint` lists skills that are too long, or that describe a topic instead of when to apply.
 
+Routing runs in process with `--approved-only` semantics, and the router gates on `probability`. Every outcome is
+logged as delivered, abstained (nothing fits well enough, which is healthy) or degraded (no key, router or approvals
+failure, a refused skill, an exception, or the per-call time budget `INJECT_BUDGET` of 90 s running out). Degradation
+is shown to the operator, never to the agent: once per session per reason as a hook `systemMessage`, on stderr, and
+(Pi) on the console. Rows carry `"degraded": true` in the log, and errors are logged by reason or type, never by
+message.
+
 Gates: it abstains below `INJECT_MIN_CONF` (0.75), injects at most `INJECT_MAX_SKILLS` (3) skills per session (a
 failing test is exempt), cuts each text near `INJECT_MAX_CHARS` (9000) at a section boundary, and follows the plan's
 needs over mechanical triggers. `INJECT=off` disables it. Logs and session state live under `INJECT_HOME` (default

@@ -14,7 +14,9 @@ This repository follows the [AI-Native SDLC Playbook](https://github.com/jon-dev
 - Delivery writes only under `.tink/.active/` (via `tink mount`) and the optional receipt; `--pick` writes nothing.
 - `tink-inject` (the context injector) writes only its log and per-session state under `INJECT_HOME`
   (default `~/.local/share/tink-inject`; log path `INJECT_LOG`), plus whatever `tink mount` writes during delivery.
-  Hooks must exit 0 and stay silent on any failure: the agent is never broken or told that skills exist.
+  Hooks always exit 0 and never break the agent. On failure they add nothing to the agent's context (the agent is
+  never told that skills exist) and report the degradation to the operator only: a hook `systemMessage` and one
+  stderr line, once per session per reason.
 
 ## git-golden
 
